@@ -3,7 +3,7 @@
   "name": "LN Pool",
   "short_description": "1v1 8-ball pool for sats: both players buy in, the winner takes the pot.",
   "version": "0.1.0",
-  "min_lnbits_version": "1.5.7",
+  "min_lnbits_version": "1.6.1",
   "tile": "/ext-assets/lnpool/assets/icon.png",
   "tags": ["gaming", "pool", "wasm", "lightning"],
   "extension_type": "wasm",

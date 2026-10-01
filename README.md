@@ -5,7 +5,7 @@ wallet and shares a link. A player creates a match and chooses the stake, an
 opponent joins, both pay the same buy-in, they play in the browser, and the
 winner claims the pot to a Lightning address or an invoice.
 
-- Extension id `lnpool`, type `wasm`, minimum LNbits 1.5.7 (developed on 1.6.2-rc1)
+- Extension id `lnpool`, type `wasm`, minimum LNbits 1.6.1 (tested on 1.6.1 and 1.6.2)
 - Owner page: `/ext/lnpool`
 - Hall (public): `/ext/lnpool/halls/{hall_id}`
 - Match (public): `/ext/lnpool/matches/{match_id}`
