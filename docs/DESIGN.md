@@ -261,7 +261,11 @@ reserve.
 So the hall wallet has to hold more than the pots, and keeping it so is the
 operator's job. A hall fee helps but guarantees nothing: 10% of a 10 sat pot
 is 1 sat, less than the reserve. With no fee the whole pot goes to the
-winner and the wallet needs spare sats for every payout.
+winner and the wallet needs spare sats for every payout; the owner page says
+so when the fee is 0. It also says when the smallest stake is under 50 sats,
+because fees and the reserve weigh more the smaller the pot is. Both are
+notes: any value can be saved, and the recommendation is about running
+costs, not a Lightning rule.
 
 When the wallet holds too little, LNbits refuses before anything is sent.
 The match shows `unsent`, the player is told the hall wallet needs funds,
@@ -447,6 +451,7 @@ static/pool-table.js         canvas renderer: table, lit rolling balls, cue, eff
 static/pool-fx.js            visual-only observers of a shot: rotation, impacts, pocket drops, sound
 static/sponsors.js           sponsor placements (empty by default)
 static/admin.js              hall owner page
+static/hall-advice.js        the notes the owner page shows about the fee and the stakes
 static/lnbits-extension-sdk.js   iframe bridge client
 static/vendor/qrcode.js      QR generator (MIT)
 ui/play.html, ui/admin.html

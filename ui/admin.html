@@ -24,6 +24,11 @@
             <label>Largest stake, sats <input id="max-stake" type="number" min="1" /></label>
             <label>Hall fee, % of the pot <input id="fee" type="number" min="0" max="50" /></label>
           </div>
+          <p class="muted">
+            The hall fee is the share of each pot you keep. Lightning routing fees are a separate network cost, paid
+            from this wallet whenever a prize is sent.
+          </p>
+          <ul id="hall-notes" class="advice" hidden></ul>
           <div class="fields">
             <button id="save" class="primary">Save</button>
             <button id="authorize">Authorize payouts</button>
@@ -33,11 +38,11 @@
             up to two largest stakes.
           </p>
           <p class="muted">
-            Lightning routing fees are paid from this wallet on top of the prize. LNbits only sends a payout when the
-            wallet holds the prize plus a reserve for those fees: by default 2 sats, or 1% of the payout if that is
-            more. Keep that much in the wallet beyond the pots, or set a hall fee that leaves it there. A payout the
-            wallet cannot cover is not sent: the match is flagged below and the player tries again once you have
-            added funds.
+            LNbits only sends a payout when the wallet holds the prize plus a reserve for routing fees: by default 2
+            sats, or 1% of the payout if that is more. A hall fee does not guarantee that: with a small fee or a
+            small pot it leaves less than the reserve. Keeping enough in this wallet beyond the pots is up to you. A
+            payout the wallet cannot cover is not sent: the match is flagged below, and the player tries again once
+            you have added funds.
           </p>
         </div>
 
@@ -108,6 +113,7 @@
     </main>
     <script src="/ext-assets/lnpool/lnbits-extension-sdk.js"></script>
     <script src="/ext-assets/lnpool/pool-engine.js"></script>
+    <script src="/ext-assets/lnpool/hall-advice.js"></script>
     <script src="/ext-assets/lnpool/admin.js"></script>
   </body>
 </html>

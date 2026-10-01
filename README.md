@@ -45,21 +45,32 @@ Open LN Pool from the LNbits menu.
 ### Stakes and the fee
 
 Both players pay the same stake. The pot is twice the stake. The hall fee is
-a percentage of the pot that stays in your wallet; the winner gets the rest,
-and sees that amount before paying. The prize is paid in full or not at all:
-an invoice for any other amount is refused.
+the share of each pot you keep; the winner gets the rest, and sees that
+amount before paying. The prize is paid in full or not at all: an invoice for
+any other amount is refused.
 
-### Keep a float in the wallet
+50 sats per player is a sensible smallest stake for normal use. Smaller
+stakes work, and are handy for testing, but routing costs do not shrink with
+the pot, so small matches need proportionally more spare sats in the wallet.
+This is a recommendation about running costs, not a Lightning requirement,
+and actual routing fees vary. The owner page shows a note when the smallest
+stake is below 50; it does not stop you.
 
-Lightning routing fees for a payout are paid from the hall wallet on top of
-the prize. LNbits only sends a payment when the wallet holds the amount plus
-a reserve for those fees: by default 2 sats, or 1% of the payment if that is
-more.
+### Keep spare sats in the wallet
 
-So the wallet has to hold more than the pots. A hall fee of 1% or more leaves
-enough once it comes to 2 sats. With a smaller fee, or small stakes, keep a
-float. For example, at a stake of 5 sats and a 10% fee the pot is 10, the
-prize is 9, and LNbits wants 11 in the wallet.
+Lightning routing fees are a separate network cost. They are paid from the
+hall wallet on top of the prize, and LNbits only sends a payment when the
+wallet holds the amount plus a reserve for them: by default 2 sats, or 1% of
+the payment if that is more.
+
+So the wallet has to hold more than the pots, and keeping it that way is up
+to you.
+
+- **With a 0% hall fee** the whole pot goes to the winner and nothing is left
+  for routing fees. Keep extra sats in the wallet, or payouts fail until it
+  is topped up. The owner page says so when the fee is 0.
+- **A hall fee does not guarantee enough.** At a stake of 5 sats and a 10%
+  fee the pot is 10, the prize is 9, and LNbits wants 11 in the wallet.
 
 When the wallet is short, the payout is not sent. Nothing is lost: the player
 is told the hall wallet needs funds, the owner page shows the match as "NOT
@@ -176,7 +187,7 @@ Do not upgrade the extension while matches are in play.
 
 ```bash
 cd dev
-npm run check            # syntax checks and 92 unit tests
+npm run check            # syntax checks and 93 unit tests
 npm run build:wasm       # bundle, then jco componentize -> ../wasm/module.wasm
 LNBITS_DIR=/path/to/lnbits e2e/run.sh   # 85 checks against LNbits itself
 npm run check:release    # is the archive for this commit installable?

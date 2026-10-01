@@ -17,6 +17,7 @@
 
   async function init() {
     $('save').addEventListener('click', saveHall)
+    for (const id of ['fee', 'min-stake']) $(id).addEventListener('input', showAdvice)
     $('authorize').addEventListener('click', () => authorize(true))
     $('copy-hall').addEventListener('click', () => copy($('hall-link').value))
     $('open-hall').addEventListener('click', () => goTo('/ext/lnpool/halls/' + encodeURIComponent(app.hall.id)))
@@ -50,11 +51,25 @@
     $('min-stake').value = hall.minStake
     $('max-stake').value = hall.maxStake
     $('fee').value = hall.feePercent
+    showAdvice()
     $('link-row').hidden = !hall.id
     $('link-help').textContent = hall.id
       ? 'Share this link. Players create matches there and send each match link to their opponent.'
       : 'Save the hall to get its link.'
     $('hall-link').value = hall.id ? origin + '/ext/lnpool/halls/' + encodeURIComponent(hall.id) : ''
+  }
+
+  // Notes about the fee and the stakes now in the form. They inform; nothing
+  // is refused because of them.
+  function showAdvice() {
+    const notes = window.HallAdvice.notes({feePercent: $('fee').value === '' ? NaN : Number($('fee').value), minStake: Number($('min-stake').value)})
+    const list = $('hall-notes')
+    list.replaceChildren(...notes.map(note => {
+      const item = document.createElement('li')
+      item.textContent = note.text
+      return item
+    }))
+    list.hidden = notes.length === 0
   }
 
   async function saveHall() {

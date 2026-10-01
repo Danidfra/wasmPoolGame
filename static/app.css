@@ -1627,6 +1627,21 @@ tr.attention td {
   color: var(--bad);
 }
 
+.advice {
+  margin: 0;
+  padding: 10px 12px 10px 28px;
+  border: 1px solid rgba(240, 180, 41, 0.35);
+  border-radius: 10px;
+  background: rgba(240, 180, 41, 0.08);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.advice li + li {
+  margin-top: 6px;
+}
+
 .verdict {
   background: #0c1118;
   border: 1px solid var(--line);

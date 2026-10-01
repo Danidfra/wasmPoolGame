@@ -944,7 +944,7 @@ function ownerHall() {
     wallet_name: '',
     enabled: false,
     fee_percent: 0,
-    min_stake: 100,
+    min_stake: 50,
     max_stake: 10000,
     created_at: now,
     updated_at: now

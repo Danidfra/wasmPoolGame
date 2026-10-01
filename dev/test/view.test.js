@@ -330,3 +330,28 @@ test('a payout remark left in the note by an earlier version is not shown as the
   assert.equal(V.matchNote({note: 'Payout failed: Payment failed: no route'}), '')
   assert.equal(V.matchNote({}), '')
 })
+
+// ── Notes on the owner page ─────────────────────────────────────────────────
+
+test('a hall with no fee, or with very small stakes, gets a note and is not refused', async () => {
+  await import('../../static/hall-advice.js')
+  const H = globalThis.HallAdvice
+  const ids = hall => H.notes(hall).map(note => note.id)
+
+  assert.deepEqual(ids({feePercent: 10, minStake: 100}), [])
+  assert.deepEqual(ids({feePercent: 1, minStake: 50}), [], 'the recommended smallest stake itself needs no note')
+
+  const free = H.notes({feePercent: 0, minStake: 100})
+  assert.deepEqual(free.map(note => note.id), ['no-fee'])
+  assert.match(free[0].text, /0% hall fee.*whole pot is paid to the winner.*extra sats.*routing fees.*topped up/)
+
+  const small = H.notes({feePercent: 10, minStake: 5})
+  assert.deepEqual(small.map(note => note.id), ['small-stakes'])
+  assert.match(small[0].text, /below 50 sats.*testing.*recommendation, not a Lightning rule/)
+  assert.deepEqual(ids({feePercent: 0, minStake: 1}), ['no-fee', 'small-stakes'])
+
+  // Nothing typed yet, or nonsense, is not commented on.
+  assert.deepEqual(ids({feePercent: NaN, minStake: NaN}), [])
+  assert.deepEqual(ids({feePercent: NaN, minStake: 0}), [])
+  assert.equal(H.RECOMMENDED_MIN_STAKE, 50)
+})
