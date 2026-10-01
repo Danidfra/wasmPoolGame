@@ -356,11 +356,11 @@
         title = 'You won!'
         tone = 'win'
         showAmount = true
-        body = view.note || ''
+        body = V.matchNote(view)
       } else {
         title = winner + ' won'
         tone = seat ? 'lose' : ''
-        body = (view.note ? view.note + ' ' : '') + 'The pot of ' + V.sats(view.prize) + ' sats goes to ' + winner + '.'
+        body = (V.matchNote(view) ? V.matchNote(view) + ' ' : '') + 'The pot of ' + V.sats(view.prize) + ' sats goes to ' + winner + '.'
       }
     } else if (status === 'cancelled') {
       eyebrow = 'Match cancelled'
@@ -375,7 +375,7 @@
     } else {
       eyebrow = 'Match closed'
       title = 'Settled by the hall'
-      body = view.note || 'The hall operator settled this match by hand.'
+      body = V.matchNote(view) || 'The hall operator settled this match by hand.'
     }
     box.className = 'result ' + tone
     text('result-eyebrow', eyebrow)
@@ -386,33 +386,18 @@
     show('result-text', !!body)
 
     // Payout: the claim form for whoever is owed, a status line for everyone.
-    const state = settlement.status
-    const sending = state === 'paying' || state === 'pending'
-    const claiming = payee && (state === '' || state === 'failed')
-    show('claim-form', claiming)
+    const payout = V.payout(view, payee)
+    show('claim-form', !!payout.form)
     // One gold button at a time: claiming comes before starting another game.
-    $('again').classList.toggle('primary', !claiming)
-    show('claim-destination', state !== 'failed')
+    $('again').classList.toggle('primary', !payout.form)
+    show('claim-destination', payout.form === 'destination')
     text('claim-label', status === 'cancelled' ? 'Where should the refund go?' : 'Where should the sats go?')
     $('claim-destination').placeholder = 'you@wallet.com, or an invoice for exactly ' + amount
-    if (!$('claim-button').classList.contains('busy')) {
-      text('claim-button', state === 'failed' ? 'Try the payment again' : 'Claim ' + amount)
-    }
-    let line = ''
-    let lineTone = ''
-    if (payee) {
-      if (sending) [line, lineTone] = ['Sending ' + amount, 'sending']
-      else if (state === 'paid') [line, lineTone] = [amount + ' sent to your wallet', 'paid']
-      else if (state === 'failed') [line, lineTone] = [(view.note || 'The payment failed.') + ' If it keeps failing, ask the hall operator to pay you.', 'bad']
-      else if (state === 'manual') [line, lineTone] = ['This match has to be paid out by the hall operator.', 'bad']
-    } else if (status === 'finished') {
-      if (state === 'paid') [line, lineTone] = ['Prize paid out', 'paid']
-      else if (sending) [line, lineTone] = ['Prize on its way', 'sending']
-    }
-    show('payout', !!line)
-    text('payout-text', line)
-    $('payout').className = 'payout ' + lineTone
-    $('payout-icon').className = lineTone === 'paid' ? 'tick' : lineTone === 'sending' ? 'spinner small' : 'cross'
+    if (payout.form && !$('claim-button').classList.contains('busy')) text('claim-button', payout.button)
+    show('payout', !!payout.line)
+    text('payout-text', payout.line)
+    $('payout').className = 'payout ' + payout.tone
+    $('payout-icon').className = payout.tone === 'paid' ? 'tick' : payout.tone === 'sending' ? 'spinner small' : 'cross'
   }
 
   function invoice(paymentRequest) {

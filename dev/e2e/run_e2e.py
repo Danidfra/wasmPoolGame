@@ -6,8 +6,10 @@ symlinked into wasm_extensions, then drives the extension through its real
 HTTP routes: buy-ins paid between wallets on that instance, the paid event,
 turns computed by the browser engine, settlement, and four claims racing for
 one pot. It then repeats the money paths on a full-size table, fills the lobby
-and the owner list, and measures the fuel of every call, all at LNbits'
-default fuel limit. Nothing in your real LNbits data folder is read or written.
+and the owner list, pays out to invoices from outside this LNbits (where the
+routing-fee reserve applies) from a wallet that cannot cover it, and measures
+the fuel of every call, all at LNbits' default fuel limit. Nothing in your
+real LNbits data folder is read or written.
 """
 import asyncio
 import json
@@ -42,6 +44,7 @@ DEFAULT_FUEL = 100_000_000  # LNbits' default budget for one call
 FUEL_BUDGET = DEFAULT_FUEL // 2  # what any lnpool call may use: half of it
 
 from asgi_lifespan import LifespanManager  # noqa: E402
+from bolt11 import decode as bolt11_decode  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 
 from lnbits.app import create_app  # noqa: E402
@@ -50,7 +53,10 @@ from lnbits.core.models.users import UpdateSuperuserPassword  # noqa: E402
 from lnbits.core.services import create_user_account, update_wallet_balance  # noqa: E402
 from lnbits.core.services.payments import create_invoice, pay_invoice  # noqa: E402
 from lnbits.core.views.auth_api import first_install  # noqa: E402
+from lnbits.core.wasm_ext.storage.crud import _table_ref_for_schema  # noqa: E402
+from lnbits.db import Database  # noqa: E402
 from lnbits.settings import settings  # noqa: E402
+from lnbits.wallets import get_funding_source  # noqa: E402
 
 checks = []
 
@@ -364,6 +370,107 @@ async def scenario(http):
     check("...paging through it reaches every match", len(seen) == total, str(len(seen)))
     biggest = await api(http, "GET", "/matches?page=1&rowsPerPage=100", usr=owner.id)
     check("...and the largest page (100 rows) fits in one call", biggest.get("ok") is True and len(biggest["data"]["matches"]) == 100, fuel_of("list-lnpool-matches") if biggest.get("ok") else biggest.get("error", "")[:80])
+
+    # --- real Lightning: the routing-fee reserve, and recovering from it ------
+    # Everything above pays invoices of wallets on this LNbits, which cost no
+    # routing fee. A payout to an outside wallet needs the prize plus LNbits'
+    # fee reserve in the hall wallet. This is the first real-money test again:
+    # stakes of 5, a 10% fee, a hall wallet holding nothing but the pot.
+    funding = get_funding_source()
+
+    async def outside_invoice(amount, memo):
+        """An invoice the funding source can pay but that no wallet here owns."""
+        bolt11 = (await funding.create_invoice(amount=amount, memo=memo)).payment_request
+        return bolt11, bolt11_decode(bolt11).payment_hash
+
+    tight_owner = await create_user_account()
+    tight_wallet = await create_wallet(user_id=tight_owner.id, wallet_name="hall with no float")
+    await http.put("/api/v1/extension/lnpool/enable", params={"usr": tight_owner.id})
+    tight = (await ok(http, "PUT", "/hall", {"enabled": True, "walletId": tight_wallet.id, "walletName": "tight", "minStake": 5, "maxStake": 5000, "feePercent": 10}, usr=tight_owner.id))["hall"]
+    await http.post("/api/v1/extension/lnpool/permissions/background-payment", params={"usr": tight_owner.id}, json={"wallet_id": tight_wallet.id, "max_amount": 10000, "destination_policy": "external_allowed"})
+
+    async def tight_match(stake):
+        created = await ok(http, "POST", f"/halls/{tight['id']}/matches", {"name": "Ana", "stake": stake})
+        path = f"/matches/{created['match']['id']}"
+        await pay_invoice(wallet_id=ana.id, payment_request=created["paymentRequest"])
+        await wait_for(lambda: seat_paid(http, path, 0), "seat 1 to be paid")
+        joined = await ok(http, "POST", path + "/join", {"name": "Bo"})
+        await pay_invoice(wallet_id=bo.id, payment_request=joined["paymentRequest"])
+        await wait_for(lambda: status_is(http, path, "active"), "match to start")
+        creds = {1: {"playerId": created["playerId"], "token": created["token"]}, 2: {"playerId": joined["playerId"], "token": joined["token"]}}
+        return created["match"]["id"], path, creds
+
+    match7, path7, creds7 = await tight_match(5)
+    won = await finish(path7, creds7, 1)
+    check("5 sat stakes at a 10% fee: the prize is 9, and the hall wallet holds exactly the pot", won["settlement"]["amount"] == 9 and await balance(tight_wallet) == 10, str(await balance(tight_wallet)))
+    first, first_hash = await outside_invoice(9, "first wallet")
+    refused = await api(http, "POST", path7 + "/claim", {**creds7[1], "destination": first})
+    refused_view = refused["data"]["match"]["settlement"] if refused.get("ok") else {"status": refused.get("error")}
+    check("the payout is refused by LNbits for want of a routing-fee reserve, and reported as not sent", refused_view["status"] == "refused" and "reserve at least (2" in refused_view.get("detail", ""), f"{refused_view['status']}: {refused_view.get('detail', '')[:90]}")
+    check("...nothing left the hall wallet", await balance(tight_wallet) == 10 and first_hash not in funding.paid_invoices, str(await balance(tight_wallet)))
+    second, second_hash = await outside_invoice(9, "second wallet")
+    again = (await ok(http, "POST", path7 + "/claim", {**creds7[1], "destination": second}))["match"]
+    check("claiming again while the wallet is short is refused again, and binds nothing", again["settlement"]["status"] == "refused" and await balance(tight_wallet) == 10 and second_hash not in funding.paid_invoices)
+    detail = await ok(http, "GET", f"/matches/{match7}/admin", usr=tight_owner.id)
+    check("the operator sees the match flagged and both attempts", detail["match"]["payoutStatus"] == "refused" and [p["status"] for p in detail["payouts"]] == ["refused", "refused"], str([p["status"] for p in detail["payouts"]]))
+
+    await update_wallet_balance(wallet=tight_wallet, amount=2)  # the operator tops up
+    third, third_hash = await outside_invoice(9, "third wallet")
+    paid = (await ok(http, "POST", path7 + "/claim", {**creds7[1], "destination": third}))["match"]
+    check("after a top-up of 2 sats the full prize is paid, to a new destination", paid["settlement"]["status"] == "paid" and third_hash in funding.paid_invoices, paid["settlement"]["status"])
+    check("...once: the hall wallet is down by exactly 9, the refused invoices were never paid", await balance(tight_wallet) == 3 and first_hash not in funding.paid_invoices and second_hash not in funding.paid_invoices, str(await balance(tight_wallet)))
+    late = (await ok(http, "POST", path7 + "/claim", {**creds7[1], "destination": first}))["match"]
+    check("claiming again with the first invoice pays nothing more", late["settlement"]["status"] == "paid" and await balance(tight_wallet) == 3 and first_hash not in funding.paid_invoices)
+
+    # The race again, at the point the new rule opens up: after a refusal,
+    # four claims at once, each naming a different outside wallet.
+    await ok(http, "PUT", "/hall", {"enabled": True, "walletId": tight_wallet.id, "walletName": "tight", "minStake": 5, "maxStake": 5000, "feePercent": 0}, usr=tight_owner.id)
+    match8, path8, creds8 = await tight_match(500)
+    await finish(path8, creds8, 2)
+    short = (await ok(http, "POST", path8 + "/claim", {**creds8[2], "destination": (await outside_invoice(1000, "short"))[0]}))["match"]
+    check("a 1000 sat prize from a wallet 7 sats short of the reserve is not sent", short["settlement"]["status"] == "refused" and await balance(tight_wallet) == 1003, f"{short['settlement']['status']}, wallet {await balance(tight_wallet)}")
+    await update_wallet_balance(wallet=tight_wallet, amount=50)
+    racers = [await outside_invoice(1000, f"racer {n}") for n in range(4)]
+    results = await asyncio.gather(*[api(http, "POST", path8 + "/claim", {**creds8[2], "destination": bolt11}) for bolt11, _ in racers])
+    summary = [("settling" if r["data"].get("settling") else r["data"]["match"]["settlement"]["status"]) if r.get("ok") else "error: " + r.get("error", "")[:60] for r in results]
+    await asyncio.sleep(0.5)
+    final = (await ok(http, "POST", path8 + "/claim", {**creds8[2], "destination": racers[0][0]}))["match"]
+    winners = [payment_hash for _, payment_hash in racers if payment_hash in funding.paid_invoices]
+    check("after a refusal, 4 simultaneous claims to 4 different outside wallets: one is paid", len(winners) == 1 and final["settlement"]["status"] == "paid" and await balance(tight_wallet) == 53, f"{summary}, {len(winners)} paid, wallet {await balance(tight_wallet)}")
+
+    # A match already stuck by the previous version: its lock is used up, the
+    # invoice is bound in the match row, the payout was refused for the reserve
+    # and no attempt was ever recorded. Written straight into storage, as the
+    # previous build left it.
+    for wallet in (ana, bo):
+        await update_wallet_balance(wallet=wallet, amount=10000)
+    match10, path10, creds10 = await tight_match(5000)
+    await finish(path10, creds10, 1)
+    bound, bound_hash = await outside_invoice(10000, "bound by the previous version")
+    async with Database("ext_lnpool").connect() as conn:
+        await conn.execute(
+            f"UPDATE {_table_ref_for_schema('lnpool', 'lnpool_matches')} SET payout_seat = 1, payout_amount = 10000, payout_bolt11 = :bolt11, payout_hash = :hash, payout_status = 'failed', note = :note WHERE id = :id",  # noqa: S608
+            {"bolt11": bound, "hash": bound_hash, "note": "Payout failed: You must reserve at least (100  sat) to cover potential routing fees.", "id": match10},
+        )
+    elsewhere, elsewhere_hash = await outside_invoice(10000, "somewhere else")
+    stuck = (await ok(http, "POST", path10 + "/claim", {**creds10[1], "destination": elsewhere}))["match"]
+    check("a match stuck by the previous version stays bound to its invoice: nothing is paid while the wallet is short", stuck["settlement"]["status"] == "failed" and await balance(tight_wallet) == 10053 and not ({bound_hash, elsewhere_hash} & funding.paid_invoices), f"{stuck['settlement']['status']}, wallet {await balance(tight_wallet)}")
+    await update_wallet_balance(wallet=tight_wallet, amount=100)
+    freed = (await ok(http, "POST", path10 + "/claim", {**creds10[1], "destination": elsewhere}))["match"]
+    check("...after a top-up the same claim pays the bound invoice, and only that one", freed["settlement"]["status"] == "paid" and bound_hash in funding.paid_invoices and elsewhere_hash not in funding.paid_invoices and await balance(tight_wallet) == 153, f"{freed['settlement']['status']}, wallet {await balance(tight_wallet)}")
+
+    # A payment the node fails. LNbits keeps a failed payment for that invoice;
+    # until it confirms the failure, no other destination is accepted.
+    match9, path9, creds9 = await new_match()
+    await finish(path9, creds9, 1)
+    hall_mid = await balance(hall_wallet)
+    unpayable, unpayable_hash = await outside_invoice(2000, "a wallet the node cannot reach")
+    funding.payment_secrets.pop(unpayable_hash)  # FakeWallet now fails it, as a node with no route would
+    failed = (await ok(http, "POST", path9 + "/claim", {**creds9[1], "destination": unpayable}))["match"]
+    check("a payout the node fails is reported as failed, and nothing leaves the wallet", failed["settlement"]["status"] == "failed" and "Payment failed" in failed["settlement"].get("detail", "") and await balance(hall_wallet) == hall_mid, f"{failed['settlement']['status']}: {failed['settlement'].get('detail', '')[:70]}")
+    other, other_hash = await outside_invoice(2000, "another wallet")
+    held = (await ok(http, "POST", path9 + "/claim", {**creds9[1], "destination": other}))["match"]
+    check("...and while LNbits cannot confirm that failure, another destination is not paid", held["settlement"]["status"] in ("unconfirmed", "failed") and other_hash not in funding.paid_invoices and await balance(hall_wallet) == hall_mid, held["settlement"]["status"])
 
     check("fuel was measured for every call", FUEL_MEASURED and len(fuelprobe.calls) > 0, f"{len(fuelprobe.calls)} invocations")
     cut_off = [call["export"] for call in fuelprobe.calls if not call["ok"]]

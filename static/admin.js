@@ -153,7 +153,7 @@
 
   function needsAttention(match) {
     if (match.status === 'disputed') return true
-    if (['failed', 'manual'].includes(match.payoutStatus)) return true
+    if (['failed', 'manual', 'refused', 'unconfirmed'].includes(match.payoutStatus)) return true
     return false
   }
 
@@ -166,9 +166,22 @@
     return match.status
   }
 
+  // What one recorded call to pay a payout invoice proved.
+  const PAYOUT_WORDS = {
+    started: 'started, result never recorded: it may have been paid',
+    paid: 'paid',
+    pending: 'in flight when last asked',
+    refused: 'not sent',
+    failed: 'failed at the node',
+    dead: 'failed, and LNbits will not send this invoice again',
+    unknown: 'result unclear: it may have been paid'
+  }
+
   function payoutLabel(match) {
     if (match.payoutStatus === 'paid') return match.payoutAmount + ' sats paid'
     if (match.payoutStatus === 'failed') return 'FAILED: needs you'
+    if (match.payoutStatus === 'refused') return 'NOT SENT: needs you'
+    if (match.payoutStatus === 'unconfirmed') return 'UNCONFIRMED: check the wallet'
     if (match.payoutStatus === 'manual') return 'needs you'
     if (match.payoutStatus) return match.payoutStatus
     if (match.status === 'finished') return 'not claimed yet'
@@ -208,6 +221,15 @@
       item.textContent = seat + ': ' + player.name +
         (player.paidAmount ? ', paid ' + player.paidAmount + ' sats' : '') + ' · payment ' + player.paymentHash
       list.append(item)
+    }
+
+    const payouts = $('detail-payouts')
+    payouts.replaceChildren()
+    for (const attempt of detail.payouts || []) {
+      const item = document.createElement('li')
+      item.textContent = 'Payout attempt ' + attempt.n + ': ' + attempt.amount + ' sats to seat ' + attempt.seat + ', ' +
+        PAYOUT_WORDS[attempt.status] + (attempt.detail ? ' (' + attempt.detail + ')' : '') + ' · payment ' + attempt.paymentHash
+      payouts.append(item)
     }
 
     const verdict = judge(detail)

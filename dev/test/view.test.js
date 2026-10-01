@@ -217,3 +217,39 @@ test('the end of a match is announced to each side in its own words', () => {
   const frozen = V.events(before, V.snapshot(view({status: 'disputed'}), state))
   assert.equal(frozen[0].tone, 'bad')
 })
+
+test('the result screen offers the right thing for every payout state', () => {
+  const view = (status, detail = '') => ({status: 'finished', note: 'Bo conceded.', settlement: {seat: 1, amount: 9, reason: 'prize', status, detail}})
+  const offered = (status, note) => V.payout(view(status, note), true)
+
+  assert.deepEqual([offered('').form, offered('').button, offered('').line], ['destination', 'Claim 9 sats', ''])
+  assert.equal(offered('paying').form, '')
+  assert.equal(offered('pending').line, 'Sending 9 sats')
+  assert.deepEqual([offered('paid').form, offered('paid').tone], ['', 'paid'])
+  assert.equal(offered('manual').form, '')
+
+  // Nothing was sent: the player may name any wallet again, and is told why.
+  const short = offered('refused', 'You must reserve at least (2  sat) to cover potential routing fees.')
+  assert.equal(short.form, 'destination')
+  assert.equal(short.button, 'Claim 9 sats')
+  assert.match(short.line, /Nothing was sent.*hall operator to top up/)
+  assert.match(offered('refused', 'payment exceeds max amount').line, /Nothing was sent \(payment exceeds max amount\)\. Claim again/)
+  assert.match(offered('refused', 'Payment is failed node, retrying is not possible.').line, /will not be tried again/)
+
+  // A payment may exist: only the invoice the backend already has is retried.
+  assert.deepEqual([offered('failed', 'Payment failed: no route').form, offered('failed').button], ['retry', 'Try the payment again'])
+  assert.match(offered('failed', 'Payment failed: no route').line, /did not go through \(Payment failed: no route\)/)
+  assert.equal(offered('unconfirmed').form, 'retry')
+  assert.match(offered('unconfirmed', 'x. Last check: Insufficient balance.').line, /may have arrived/)
+
+  // Everyone else only hears how the prize is doing.
+  assert.equal(V.payout(view('refused', 'x'), false).line, '')
+  assert.equal(V.payout(view('paid'), false).line, 'Prize paid out')
+  assert.equal(V.payout({...view('paid'), status: 'cancelled'}, false).line, '')
+})
+
+test('a payout remark left in the note by an earlier version is not shown as the match note', () => {
+  assert.equal(V.matchNote({note: 'Bo conceded.'}), 'Bo conceded.')
+  assert.equal(V.matchNote({note: 'Payout failed: Payment failed: no route'}), '')
+  assert.equal(V.matchNote({}), '')
+})

@@ -30,8 +30,14 @@
           </div>
           <p class="muted">
             Winners are paid from this wallet without you being present, so LNbits asks you to approve background payments
-            up to two largest stakes. Lightning routing fees come out of this wallet on top of the pot: keep a small
-            float in it, or set a hall fee that covers them.
+            up to two largest stakes.
+          </p>
+          <p class="muted">
+            Lightning routing fees are paid from this wallet on top of the prize. LNbits only sends a payout when the
+            wallet holds the prize plus a reserve for those fees: by default 2 sats, or 1% of the payout if that is
+            more. Keep that much in the wallet beyond the pots, or set a hall fee that leaves it there. A payout the
+            wallet cannot cover is not sent: the match is flagged below and the player can claim again once you have
+            added funds.
           </p>
         </div>
 
@@ -82,6 +88,7 @@
         </div>
         <p id="detail-summary"></p>
         <ul id="detail-players" class="list"></ul>
+        <ul id="detail-payouts" class="list"></ul>
         <p id="detail-verdict" class="verdict" hidden></p>
         <div class="fields">
           <input id="resolve-note" maxlength="300" placeholder="What you did, e.g. paid seat 1 by hand" aria-label="Note" />
@@ -89,8 +96,10 @@
           <button id="open-match">Open match</button>
         </div>
         <p class="muted">
-          Marking a match as settled closes it: nobody can claim from it afterwards. Do that only after you have paid
-          or refunded the players yourself.
+          Marking a match as settled closes it: nobody can claim from it afterwards. To settle by hand, close it
+          first, then look in the wallet's payments for an outgoing "LN Pool payout" with this match's id. If there
+          is one that has not failed, the player has been paid or is being paid. Otherwise pay or refund them
+          yourself.
         </p>
       </div>
     </main>

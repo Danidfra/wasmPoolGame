@@ -27,6 +27,57 @@
     return picks.filter((value, index) => picks.indexOf(value) === index).slice(0, 5)
   }
 
+  // The match note, unless it is a remark about a failed payout left there by
+  // an earlier version: payout() below words those for the player.
+  function matchNote(view) {
+    return /^Payout failed: /.test(view.note || '') ? '' : view.note || ''
+  }
+
+  // What the result screen offers and says about the payout.
+  //   form  'destination' asks where to send it, 'retry' is a button only
+  //         (the backend will pay the invoice it already has), '' is no form
+  function payout(view, payee) {
+    const state = view.settlement.status
+    const amount = sats(view.settlement.amount) + ' sats'
+    const reason = String(view.settlement.detail || '').replace(/ ?Last check: .*$/, '').replace(/\.$/, '')
+    const none = {form: '', button: '', line: '', tone: ''}
+    const sending = state === 'paying' || state === 'pending'
+    if (!payee) {
+      if (view.status !== 'finished') return none
+      if (state === 'paid') return {...none, line: 'Prize paid out', tone: 'paid'}
+      return sending ? {...none, line: 'Prize on its way', tone: 'sending'} : none
+    }
+    if (sending) return {...none, line: 'Sending ' + amount, tone: 'sending'}
+    if (state === 'paid') return {...none, line: amount + ' sent to your wallet', tone: 'paid'}
+    if (state === 'manual') return {...none, line: 'This match has to be paid out by the hall operator.', tone: 'bad'}
+    if (state === 'failed') {
+      return {
+        form: 'retry',
+        button: 'Try the payment again',
+        line: 'The payment did not go through' + (reason ? ' (' + reason + ')' : '') + '. Try again. If it keeps failing, ask the hall operator to pay you.',
+        tone: 'bad'
+      }
+    }
+    if (state === 'unconfirmed') {
+      return {
+        form: 'retry',
+        button: 'Check the payment again',
+        line: 'This payment could not be confirmed. Look in your wallet: it may have arrived. If it has not, ask the hall operator.',
+        tone: 'bad'
+      }
+    }
+    const claim = {form: 'destination', button: 'Claim ' + amount, line: '', tone: ''}
+    if (state !== 'refused') return claim
+    let line = 'Nothing was sent' + (reason ? ' (' + reason + ')' : '') + '. Claim again, to this or another wallet.'
+    if (/reserve|insufficient balance/i.test(reason)) {
+      line = 'Nothing was sent: the hall wallet does not hold enough for the payout and the Lightning routing-fee reserve. Your ' + amount +
+        ' are safe. Ask the hall operator to top up the wallet, then claim again.'
+    } else if (/failed node/i.test(reason)) {
+      line = 'That payment failed and will not be tried again. Claim again with a new invoice or another wallet.'
+    }
+    return {...claim, line, tone: 'bad'}
+  }
+
   function initial(name) {
     const text = String(name || '').trim()
     return text ? text[0].toUpperCase() : '?'
@@ -191,6 +242,8 @@
     GROUP_NAME,
     sats,
     stakePresets,
+    matchNote,
+    payout,
     initial,
     groupKind,
     groupBalls,

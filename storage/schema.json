@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "tables": {
     "lnpool_halls": {
       "fields": [
@@ -54,11 +54,28 @@
         {"name": "result_json", "type": "string"},
         {"name": "created_at", "type": "integer"}
       ]
+    },
+    "lnpool_payouts": {
+      "fields": [
+        {"name": "id", "type": "string"},
+        {"name": "match_id", "type": "string"},
+        {"name": "n", "type": "integer"},
+        {"name": "seat", "type": "integer"},
+        {"name": "amount", "type": "integer"},
+        {"name": "bolt11", "type": "string"},
+        {"name": "payment_hash", "type": "string"},
+        {"name": "status", "type": "string"},
+        {"name": "detail", "type": "string"},
+        {"name": "next_lock", "type": "string"},
+        {"name": "created_at", "type": "integer"},
+        {"name": "updated_at", "type": "integer"}
+      ]
     }
   },
   "indexes": [
     {"table": "lnpool_matches", "name": "lnpool_matches_by_hall", "field": "hall_id"},
     {"table": "lnpool_matches", "name": "lnpool_matches_by_status", "field": "status"},
-    {"table": "lnpool_players", "name": "lnpool_players_by_match", "field": "match_id"}
+    {"table": "lnpool_players", "name": "lnpool_players_by_match", "field": "match_id"},
+    {"table": "lnpool_payouts", "name": "lnpool_payouts_by_match", "field": "match_id"}
   ]
 }

@@ -19,7 +19,9 @@ What is reused from other projects: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES
 - A shot is sent as input (direction, power, cue position). Both browsers
   simulate it with the same deterministic engine, and a turn counts only when
   both report the same table. Different reports freeze the match.
-- The pot is paid at most once, to an invoice for exactly the amount owed.
+- The pot is paid at most once, to an invoice for exactly the amount owed. If
+  a payout is not sent, the winner can claim again; another destination is
+  accepted only when LNbits has shown that the first one was never paid.
 - It is custodial: the hall owner's wallet holds the pot during the match.
 - It is not an anti-cheat. A losing player can stall or force a dispute, and
   those cases are settled by the hall owner by hand.
@@ -28,9 +30,9 @@ What is reused from other projects: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES
 
 ```bash
 cd dev
-npm run check        # syntax checks + 63 tests (backend on a fake host, engine, page logic)
+npm run check        # syntax checks + 78 tests (backend on a fake host, engine, page logic)
 npm run build:wasm   # bundle + jco componentize -> ../wasm/module.wasm
-e2e/run.sh           # 59 checks against your LNbits checkout, on a throwaway data folder
+e2e/run.sh           # 73 checks against your LNbits checkout, on a throwaway data folder
 ```
 
 `build:wasm` needs network access the first time (npx fetches jco 1.19.0).
@@ -84,14 +86,25 @@ rail-after-contact rule.
 
 ## For the hall owner
 
-- Keep a small float in the wallet, or set a hall fee: routing fees for
-  payouts come out of the wallet on top of the pot.
+- Keep a float in the wallet, or set a hall fee. Routing fees for payouts are
+  paid from the wallet on top of the prize, and LNbits only sends a payout
+  when the wallet holds the prize plus a reserve for them (by default 2 sats,
+  or 1% of the payout if that is more). A hall fee of 1% or more leaves that
+  in the wallet once it comes to 2 sats; with a smaller fee or small stakes
+  you need the float. A payout the wallet cannot cover is not sent: the match
+  shows "NOT SENT" on the owner page, and the winner can claim again once you
+  have added funds.
 - A match must be claimed within the LNbits invoice expiry (one hour by
   default) of being created, or it has to be paid by hand. See "What the lock
   costs" in the design notes.
 - The owner page lists buy-ins that arrived with no seat left, and matches
-  that are disputed or whose payout failed. Those are yours to settle: pay
-  from the wallet, then "Mark as settled by hand".
+  that are disputed or whose payout did not go through, with every payout
+  attempt and what LNbits answered. To settle one by hand: "Mark as settled
+  by hand" first (that stops any further claim), check the wallet's payments
+  for an outgoing "LN Pool payout" with that match id, and pay only if there
+  is none or it failed.
+- After a payout that did not go through, the next claim has to come within
+  the LNbits invoice expiry (one hour by default) of the last one.
 - Do not upgrade the extension while matches are in play.
 - LNbits' default runtime limits are enough. The dearest call uses under a
   quarter of the default fuel budget. See "Fuel" in the design notes.
