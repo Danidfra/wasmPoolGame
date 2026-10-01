@@ -1284,10 +1284,22 @@ button.busy::after {
 }
 
 .payout.bad {
+  align-items: flex-start;
   border-radius: 12px;
   background: rgba(255, 107, 118, 0.1);
   color: var(--bad);
   font-weight: 500;
+}
+
+/* A long message must not squeeze the mark in front of it. */
+.payout .tick,
+.payout .cross,
+.payout .spinner {
+  flex: 0 0 auto;
+}
+
+.payout.bad .cross {
+  margin-top: 2px;
 }
 
 .result-actions {
@@ -1319,6 +1331,27 @@ button.busy::after {
   margin-left: auto;
   padding: 8px 4px;
   cursor: pointer;
+}
+
+/* Fingers need more room than a pointer does. */
+@media (pointer: coarse), (max-width: 640px) {
+  .chip,
+  .brand,
+  .icon-button,
+  .seat-key summary {
+    min-height: 44px;
+  }
+
+  .chip,
+  .icon-button {
+    min-width: 44px;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .seat-key summary {
+    padding: 12px 4px;
+  }
 }
 
 .seat-key[open] {
@@ -1601,6 +1634,12 @@ input[type='checkbox'] {
 
 .table-scroll {
   overflow-x: auto;
+}
+
+/* Match ids and payment hashes are long unbroken words. */
+#detail p,
+#detail h2 {
+  overflow-wrap: anywhere;
 }
 
 table {
