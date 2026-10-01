@@ -813,6 +813,28 @@ test('a payment reported failed that the node paid after all is found, and nothi
   assert.equal(host.invoice(other).payment, '')
 })
 
+test('calls made within the same second are read in the order they were made', () => {
+  const host = createHost()
+  // The host's ids are random: here they come out in descending order.
+  let ids = 900
+  host.onHostCall = name => {
+    if (name === 'system.id') ids -= 1
+  }
+  const realId = host.nextId
+  host.nextId = prefix => prefix + '_' + String(ids).padStart(6, '0')
+  const match = startMatch(host)
+  playTurn(host, match, table(1, 1))
+  const first = host.externalInvoice(2000)
+  host.failPayments = target => (target.internal ? null : 'timeout')
+  assert.equal(claim(host, match, 1, first).settlement.status, 'failed')
+  host.failPayments = null
+  host.nodeStatus = () => 'pending'
+  // Asked again at once: LNbits cannot say. That is the latest word, not the failure before it.
+  assert.equal(claim(host, match, 1, '').settlement.status, 'unconfirmed')
+  assert.deepEqual(payoutsOf(host, match).map(row => row.status), ['bound', 'failed', 'unknown'])
+  host.nextId = realId
+})
+
 test('an error LNbits is not known to raise before sending is not read as "nothing was sent"', () => {
   const host = createHost()
   const match = startMatch(host)

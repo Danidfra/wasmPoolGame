@@ -502,7 +502,8 @@ function payBoundInvoice(match, settlement, due) {
   }
 
   const call = storage.set(PAYOUTS, {
-    id: match.id + '-' + binding.n + '-' + system.id('pay'),
+    // The count keeps calls made within the same second in order.
+    id: match.id + '-' + binding.n + '-' + String(calls.length).padStart(3, '0') + '-' + system.id('pay'),
     match_id: match.id,
     n: binding.n,
     seat: binding.seat,

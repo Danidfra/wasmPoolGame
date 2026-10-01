@@ -44,6 +44,7 @@ export function createHost({float = FLOAT} = {}) {
     published: [],
     writes: [], // every storage write, in order
     hostCalls: [], // every host function the guest called, in order
+    nextId: null, // (prefix) => id: overrides the host's id generator
     onHostCall: null, // (name) => void, runs before each host call
     beforePay: null, // (bolt11) => void, runs while a payment is "in flight"
     refusePayments: null, // (invoice) => error string | null: LNbits refuses before sending anything
@@ -203,6 +204,7 @@ export function createHost({float = FLOAT} = {}) {
 
   const system = {
     id(prefix) {
+      if (host.nextId) return host.nextId(prefix)
       counter += 1
       return prefix + '_' + String(counter).padStart(6, '0')
     },

@@ -187,7 +187,7 @@ Do not upgrade the extension while matches are in play.
 
 ```bash
 cd dev
-npm run check            # syntax checks and 93 unit tests
+npm run check            # syntax checks and 94 unit tests
 npm run build:wasm       # bundle, then jco componentize -> ../wasm/module.wasm
 LNBITS_DIR=/path/to/lnbits e2e/run.sh   # 85 checks against LNbits itself
 npm run check:release    # is the archive for this commit installable?
