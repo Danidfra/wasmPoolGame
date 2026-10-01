@@ -1,0 +1,8 @@
+# GitHub builds a release archive with `git archive`, which leaves out paths
+# marked export-ignore. LNbits refuses to install a WASM extension archive
+# that contains Python files, and so does the catalog's validation; the
+# end-to-end harness is Python. The screenshots are only for the README.
+dev/e2e export-ignore
+docs/screenshots export-ignore
+.gitattributes export-ignore
+.gitignore export-ignore

@@ -6,6 +6,7 @@
   "scripts": {
     "build": "npm run build:wasm",
     "build:wasm": "node scripts/bundle.mjs && npx --yes @bytecodealliance/jco@1.19.0 componentize dist/index.bundle.js --disable all --enable clocks --enable random --enable stdio --wit ../wasm/lnbits-extension.wit --world-name lnpool -o ../wasm/module.wasm",
-    "check": "node --check src/index.js && node --check src/lnbits-sdk.js && node --check ../static/lnbits-extension-sdk.js && node --check ../static/pool-engine.js && node --check ../static/pool-view.js && node --check ../static/pool-fx.js && node --check ../static/pool-table.js && node --check ../static/play-ui.js && node --check ../static/play.js && node --check ../static/sponsors.js && node --check ../static/admin.js && node --test \"test/*.test.js\""
+    "check:release": "node scripts/check-release.mjs",
+    "check": "node --check src/index.js && node --check src/lnbits-sdk.js && node --check ../static/lnbits-extension-sdk.js && node --check ../static/pool-engine.js && node --check ../static/pool-view.js && node --check ../static/pool-fx.js && node --check ../static/pool-table.js && node --check ../static/play-ui.js && node --check ../static/play.js && node --check ../static/sponsors.js && node --check ../static/admin.js && node --check scripts/check-release.mjs && node --test \"test/*.test.js\""
   }
 }
