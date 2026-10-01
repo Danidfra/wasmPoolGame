@@ -99,7 +99,8 @@
           Marking a match as settled closes it: nobody can claim from it afterwards. To settle by hand, close it
           first, then look in the wallet's payments for an outgoing "LN Pool payout" with this match's id. If there
           is one that has not failed, the player has been paid or is being paid. Otherwise pay or refund them
-          yourself.
+          yourself. "Unconfirmed" means a payment was started and its result never reached LN Pool, usually
+          because it took longer than LNbits allows one call: check the wallet's payments before doing anything.
         </p>
       </div>
     </main>

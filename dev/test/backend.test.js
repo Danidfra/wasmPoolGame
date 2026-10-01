@@ -5,7 +5,7 @@ import {FLOAT, createHost, openHall, playTurn, startMatch} from './helpers.mjs'
 const table = (turn, winner = 0) => ({balls: [[750, 250]], turn, groups: 0, inHand: false, breaking: false, winner, shots: 1, last: null})
 const outgoing = (host, kind) => host.payments.filter(payment => payment.kind === kind)
 const attemptsOf = (host, match) => host.rows('lnpool_payouts').filter(row => row.match_id === match.matchId).sort((a, b) => a.n - b.n)
-const claim = (host, match, seat, destination) => host.ok('claimLnpoolPayout', {...match[seat], destination}).match
+const claim = (host, match, seat, destination) => host.claim({...match[seat], destination}).match
 
 // ── Hall ────────────────────────────────────────────────────────────────────
 
@@ -322,16 +322,16 @@ test('the agreed winner is paid the pot exactly once', () => {
   assert.equal(host.payments.length, 0, 'a refused claim pays nothing and does not use up the lock')
 
   const invoice = host.externalInvoice(2000)
-  const paid = host.ok('claimLnpoolPayout', {...match[1], destination: invoice}).match
+  const paid = host.claim({...match[1], destination: invoice}).match
   assert.equal(paid.settlement.status, 'paid')
   assert.deepEqual(outgoing(host, 'payout').map(payment => [payment.bolt11, payment.amount]), [[invoice, 2000]])
-  assert.equal(outgoing(host, 'lock').length, 1)
+  assert.equal(outgoing(host, 'lock').length, 2, 'one lock to record the invoice, one to pay it')
   assert.equal(host.balance, FLOAT)
 
   // Claiming again, with the same or another invoice, pays nothing more.
   host.balance = 5000
   for (const destination of [invoice, host.externalInvoice(2000), '']) {
-    const again = host.ok('claimLnpoolPayout', {...match[1], destination}).match
+    const again = host.claim({...match[1], destination}).match
     assert.equal(again.settlement.status, 'paid')
   }
   assert.equal(outgoing(host, 'payout').length, 1)
@@ -344,7 +344,7 @@ test('the hall fee comes out of the pot', () => {
   const match = startMatch(host, {stake: 555, hall})
   const finished = playTurn(host, match, table(2, 2))
   assert.equal(finished.settlement.amount, 999)
-  host.ok('claimLnpoolPayout', {...match[2], destination: host.externalInvoice(999)})
+  host.claim({...match[2], destination: host.externalInvoice(999)})
   assert.equal(host.balance, FLOAT + 1110 - 999)
 })
 
@@ -358,8 +358,8 @@ test('a Lightning address is resolved to one invoice, which is then the only one
     return issued.at(-1)
   })
   assert.match(host.call('claimLnpoolPayout', {...match[1], destination: 'nobody@wallet.example'}).error, /Could not get an invoice/)
-  host.ok('claimLnpoolPayout', {...match[1], destination: 'ana@wallet.example'})
-  host.ok('claimLnpoolPayout', {...match[1], destination: 'ana@wallet.example'})
+  host.claim({...match[1], destination: 'ana@wallet.example'})
+  host.claim({...match[1], destination: 'ana@wallet.example'})
   assert.equal(issued.length, 1, 'once bound, the address is not asked for another invoice')
   assert.deepEqual(outgoing(host, 'payout').map(payment => payment.bolt11), issued)
 })
@@ -380,7 +380,7 @@ test('two claims racing for one match pay one invoice', () => {
       nested = host.call('claimLnpoolPayout', {...match[1], destination: second})
     }
   }
-  const outer = host.ok('claimLnpoolPayout', {...match[1], destination: first})
+  const outer = host.claim({...match[1], destination: first})
   host.beforePay = null
 
   assert.equal(nested.ok, true)
@@ -390,7 +390,7 @@ test('two claims racing for one match pay one invoice', () => {
   assert.equal(host.invoice(second).paid, false)
 
   // The loser retries: it gets the bound invoice's status, not a payment.
-  const retry = host.ok('claimLnpoolPayout', {...match[1], destination: second}).match
+  const retry = host.claim({...match[1], destination: second}).match
   assert.equal(retry.settlement.status, 'paid')
   assert.equal(outgoing(host, 'payout').length, 1)
 })
@@ -400,7 +400,7 @@ test('a match that flips winner after it was paid still pays only once', () => {
   const match = startMatch(host)
   playTurn(host, match, table(1, 1))
   host.balance = 100000
-  host.ok('claimLnpoolPayout', {...match[1], destination: host.externalInvoice(2000)})
+  host.claim({...match[1], destination: host.externalInvoice(2000)})
   // Two colluding players rewrite the result (a stale write landing late).
   host.rawSet('lnpool_matches', {...host.row('lnpool_matches', match.matchId), winner: 2, payout_status: '', payout_bolt11: '', payout_seat: 0})
   const second = host.externalInvoice(2000)
@@ -419,16 +419,16 @@ test('a payout that is still in flight is found again, not repeated', () => {
   const invoice = host.externalInvoice(2000)
   host.invoice(invoice).leavePending = true
   host.balance = 100000 // another pot's worth and more: LNbits answers about a payment only while the wallet could pay it again
-  const pending = host.ok('claimLnpoolPayout', {...match[1], destination: invoice}).match
+  const pending = host.claim({...match[1], destination: invoice}).match
   assert.equal(pending.settlement.status, 'pending')
   // Asking again straight away does not bother LNbits.
   assert.equal(claim(host, match, 1, '').settlement.status, 'pending')
-  assert.equal(attemptsOf(host, match).length, 1)
+  assert.equal(attemptsOf(host, match).length, 2)
   host.now += 30
-  const settled = host.ok('claimLnpoolPayout', {...match[1], destination: ''}).match
+  const settled = host.claim({...match[1], destination: ''}).match
   assert.equal(settled.settlement.status, 'paid')
   assert.equal(outgoing(host, 'payout').length, 1)
-  assert.deepEqual(attemptsOf(host, match).map(attempt => [attempt.bolt11, attempt.status]), [[invoice, 'pending'], [invoice, 'paid']])
+  assert.deepEqual(attemptsOf(host, match).map(attempt => [attempt.bolt11, attempt.status]), [[invoice, 'bound'], [invoice, 'pending'], [invoice, 'paid']])
 })
 
 // ── When a payout does not go through ───────────────────────────────────────
@@ -459,7 +459,7 @@ test('a hall wallet holding only the pot cannot pay: nothing is sent and the pri
   assert.deepEqual([refused.settlement.seat, refused.settlement.amount], [1, 9], 'the prize has not changed')
   assert.equal(outgoing(host, 'payout').length, 0)
   assert.equal(host.balance, 10, 'the pot is untouched')
-  assert.deepEqual(attemptsOf(host, match).map(attempt => [attempt.bolt11, attempt.status]), [[first, 'refused']])
+  assert.deepEqual(attemptsOf(host, match).map(attempt => [attempt.bolt11, attempt.status]), [[first, 'bound'], [first, 'refused']])
 
   // Trying again changes nothing while the wallet is short, and does not
   // tie the match to anything.
@@ -554,7 +554,7 @@ test('a refusal says nothing about a payment that is still out: the first invoic
   host.now += 30
   const held = claim(host, match, 1, other)
   assert.equal(held.settlement.status, 'pending', 'a refused check does not turn a payment in flight into a failure')
-  assert.deepEqual(attemptsOf(host, match).map(attempt => [attempt.bolt11, attempt.status]), [[first, 'pending'], [first, 'refused']])
+  assert.deepEqual(attemptsOf(host, match).map(attempt => [attempt.bolt11, attempt.status]), [[first, 'bound'], [first, 'pending'], [first, 'refused']])
 
   // Money comes back, the winner asks for another wallet: not accepted.
   host.balance = 100000
@@ -599,6 +599,127 @@ test('an attempt that never reported keeps its invoice bound for good', () => {
   assert.equal(host.invoice(other).payment, '')
 })
 
+// LNbits stops a call after 5 s, and waits up to 5 s for a payment. A slow
+// payment therefore completes while the invocation that made it is killed
+// before it can record anything. This happened on the first real payout.
+function cutOffDuringPayment(host, match, destination) {
+  host.cutOff = invoice => !invoice.internal
+  const bound = host.ok('claimLnpoolPayout', {...match[1], destination})
+  assert.equal(bound.bound, true)
+  const lost = host.call('claimLnpoolPayout', {...match[1], destination})
+  host.cutOff = null
+  assert.deepEqual(lost, {ok: false, error: 'wasm trap: interrupt'})
+}
+
+test('a payment that arrives while the call is cut off is found again, never repeated, never redirected', () => {
+  const host = createHost()
+  const match = startMatch(host)
+  playTurn(host, match, table(1, 1))
+  host.balance = 100000
+  const first = host.externalInvoice(2000)
+  const other = host.externalInvoice(2000)
+  cutOffDuringPayment(host, match, first)
+
+  // The money left; the backend only knows that it started.
+  assert.deepEqual(outgoing(host, 'payout').map(payment => payment.bolt11), [first])
+  assert.deepEqual(attemptsOf(host, match).map(attempt => [attempt.bolt11, attempt.status]), [[first, 'bound'], [first, 'started']])
+  assert.equal(host.row('lnpool_matches', match.matchId).payout_status, 'paying')
+
+  // Straight afterwards nothing is done at all, whatever is asked.
+  const soon = host.ok('claimLnpoolPayout', {...match[1], destination: other})
+  assert.equal(soon.settling, true)
+  assert.equal(attemptsOf(host, match).length, 2)
+
+  // Later the next claim asks LNbits about the same invoice. It names another
+  // wallet; that is ignored. LNbits answers from the payment it has.
+  host.now += 30
+  const found = claim(host, match, 1, other)
+  assert.equal(found.settlement.status, 'paid')
+  assert.deepEqual(outgoing(host, 'payout').map(payment => payment.bolt11), [first])
+  assert.equal(host.invoice(other).payment, '', 'LNbits was never asked to pay another invoice')
+  assert.deepEqual(attemptsOf(host, match).map(attempt => [attempt.bolt11, attempt.status]), [[first, 'bound'], [first, 'started'], [first, 'paid']])
+})
+
+test('a cut-off payout from a wallet it emptied stays unconfirmed, and bound, until LNbits can answer', () => {
+  // The real case: a 9 sat prize from a wallet with just enough for it.
+  const host = createHost({float: 2})
+  const hall = openHall(host, {feePercent: 10, minStake: 1})
+  const match = startMatch(host, {stake: 5, hall})
+  playTurn(host, match, table(1, 1))
+  const first = host.externalInvoice(9)
+  cutOffDuringPayment(host, match, first)
+  assert.equal(host.balance, 3)
+  assert.equal(host.invoice(first).paid, true)
+
+  // LNbits checks the balance before it looks for the payment, so the
+  // follow-up is refused. That proves nothing, and frees nothing.
+  host.now += 30
+  for (let n = 0; n < 3; n += 1) {
+    const other = host.externalInvoice(9)
+    const unknown = claim(host, match, 1, other)
+    assert.equal(unknown.settlement.status, 'unconfirmed')
+    assert.match(unknown.settlement.detail, /never recorded.*Last check: Insufficient balance/)
+    assert.equal(host.invoice(other).payment, '')
+    host.now += 30
+  }
+  assert.equal(outgoing(host, 'payout').length, 1)
+  assert.deepEqual(attemptsOf(host, match).map(attempt => attempt.status), ['bound', 'started', 'refused', 'refused', 'refused'])
+
+  // With the prize and the reserve in the wallet again LNbits gets as far as
+  // its own record. Nothing is sent.
+  host.balance = 11
+  const found = claim(host, match, 1, host.externalInvoice(9))
+  assert.equal(found.settlement.status, 'paid')
+  assert.equal(host.balance, 11)
+  assert.deepEqual(outgoing(host, 'payout').map(payment => payment.bolt11), [first])
+})
+
+test('a claim that has used up its time takes no lock', () => {
+  const realNow = Date.now
+  let skew = 0
+  Date.now = () => realNow() + skew
+  try {
+    const host = createHost()
+    const match = startMatch(host)
+    playTurn(host, match, table(1, 1))
+    // A Lightning address that takes four seconds to answer.
+    host.lnurl.set('slow@wallet.example', amount => {
+      skew += 4000
+      return host.externalInvoice(amount)
+    })
+    assert.match(host.call('claimLnpoolPayout', {...match[1], destination: 'slow@wallet.example'}).error, /took too long.*Nothing was sent/)
+    assert.equal(host.payments.length, 0, 'not even the lock')
+    assert.equal(attemptsOf(host, match).length, 0)
+
+    // The same for the call that pays: if it is already late, it leaves the
+    // payment to a call that has the whole time limit ahead of it.
+    const invoice = host.externalInvoice(2000)
+    assert.equal(host.ok('claimLnpoolPayout', {...match[1], destination: invoice}).bound, true)
+    host.onHostCall = name => {
+      if (name === 'storage.get') skew += 1500
+    }
+    const late = host.ok('claimLnpoolPayout', {...match[1], destination: invoice})
+    host.onHostCall = null
+    assert.equal(late.settling, true)
+    assert.equal(outgoing(host, 'payout').length, 0)
+    assert.deepEqual(attemptsOf(host, match).map(attempt => attempt.status), ['bound'])
+    assert.equal(claim(host, match, 1, invoice).settlement.status, 'paid')
+  } finally {
+    Date.now = realNow
+  }
+})
+
+test('once an invoice is recorded, it is the one paid, whatever the next call names', () => {
+  const host = createHost()
+  const match = startMatch(host)
+  playTurn(host, match, table(1, 1))
+  const first = host.externalInvoice(2000)
+  const other = host.externalInvoice(2000)
+  assert.equal(host.ok('claimLnpoolPayout', {...match[1], destination: first}).bound, true)
+  assert.equal(host.ok('claimLnpoolPayout', {...match[1], destination: other}).match.settlement.status, 'paid')
+  assert.deepEqual(outgoing(host, 'payout').map(payment => payment.bolt11), [first])
+})
+
 test('a payment the node failed is sealed by LNbits before another invoice is accepted', () => {
   const host = createHost()
   const match = startMatch(host)
@@ -618,7 +739,7 @@ test('a payment the node failed is sealed by LNbits before another invoice is ac
   assert.equal(sealed.settlement.status, 'refused')
   assert.match(sealed.settlement.detail, /retrying is not possible/)
   assert.equal(outgoing(host, 'payout').length, 0)
-  assert.deepEqual(attemptsOf(host, match).map(attempt => [attempt.bolt11, attempt.status]), [[first, 'failed'], [first, 'dead']])
+  assert.deepEqual(attemptsOf(host, match).map(attempt => [attempt.bolt11, attempt.status]), [[first, 'bound'], [first, 'failed'], [first, 'dead']])
 
   // LNbits holds a failed payment of the first invoice and will never send
   // it again. Now another one can be bound.
@@ -714,9 +835,9 @@ test('a match bound by the previous version retries its own invoice and takes no
 
 test('the number of payout attempts is bounded', () => {
   const {host, match} = fundedOnlyByThePot()
-  for (let n = 0; n < 20; n += 1) assert.equal(claim(host, match, 1, host.externalInvoice(9)).settlement.status, 'refused')
+  for (let n = 0; n < 15; n += 1) assert.equal(claim(host, match, 1, host.externalInvoice(9)).settlement.status, 'refused')
   assert.match(host.call('claimLnpoolPayout', {...match[1], destination: host.externalInvoice(9)}).error, /too many times/)
-  assert.equal(attemptsOf(host, match).length, 20)
+  assert.equal(attemptsOf(host, match).length, 30)
   assert.equal(outgoing(host, 'payout').length, 0)
 })
 
@@ -728,13 +849,13 @@ test('the operator sees every payout attempt', () => {
   const second = host.externalInvoice(9)
   claim(host, match, 1, second)
   const detail = host.ok('getLnpoolMatchAdmin', {matchId: match.matchId})
-  assert.deepEqual(detail.payouts.map(attempt => [attempt.n, attempt.status, attempt.invoice, attempt.amount]), [[1, 'refused', first, 9], [2, 'paid', second, 9]])
-  assert.match(detail.payouts[0].detail, /reserve/)
+  assert.deepEqual(detail.payouts.map(attempt => [attempt.n, attempt.status, attempt.invoice, attempt.amount]), [[1, 'bound', first, 9], [2, 'refused', first, 9], [3, 'bound', second, 9], [4, 'paid', second, 9]])
+  assert.match(detail.payouts[1].detail, /reserve/)
   assert.equal(detail.match.payoutStatus, 'paid')
   const listed = host.ok('listLnpoolMatches', {}).matches.find(item => item.id === match.matchId)
   assert.equal(listed.payoutStatus, 'paid')
   // Neither the page nor the list ever carries a lock invoice.
-  assert.ok(!JSON.stringify(detail).includes(host.rows('lnpool_payouts')[0].next_lock))
+  for (const lock of host.rows('lnpool_payouts').flatMap(row => row.next_lock.split(' '))) assert.ok(!JSON.stringify(detail).includes(lock))
 })
 
 test('without a usable lock nothing is paid', () => {
@@ -766,7 +887,7 @@ test('conceding gives the match to the other player', () => {
   assert.equal(view.winner, 2)
   assert.match(view.note, /Ana conceded/)
   assert.match(host.call('concedeLnpoolMatch', {...match[2]}).error, /in play/)
-  host.ok('claimLnpoolPayout', {...match[2], destination: host.externalInvoice(2000)})
+  host.claim({...match[2], destination: host.externalInvoice(2000)})
   assert.equal(host.balance, FLOAT)
 })
 
@@ -785,7 +906,7 @@ test('the first player can cancel before anyone joins and take the buy-in back',
   assert.match(host.call('joinLnpoolMatch', {matchId: creds.matchId, name: 'Bo'}).error, /not open/)
 
   assert.match(host.call('claimLnpoolPayout', {...creds, destination: host.externalInvoice(2000)}).error, /exactly 1000 sats/)
-  host.ok('claimLnpoolPayout', {...creds, destination: host.externalInvoice(1000)})
+  host.claim({...creds, destination: host.externalInvoice(1000)})
   assert.equal(host.balance, FLOAT)
   assert.equal(outgoing(host, 'payout').length, 1)
 })
@@ -874,16 +995,29 @@ test('the owner list is two queries, however many matches there are', () => {
   assert.equal(listed.matches.length, 10)
 })
 
-test('a claim crosses into the host a fixed number of times and reads the clock once', () => {
+test('the call that pays does nothing slow before the payment', () => {
   const host = createHost()
   const match = startMatch(host)
   playTurn(host, match, table(1, 1))
-  const calls = hostCallsOf(host, () => {
-    const claimed = host.ok('claimLnpoolPayout', {matchId: match.matchId, ...match[1], destination: host.externalInvoice(2000)})
-    assert.equal(claimed.match.settlement.status, 'paid')
+  host.lnurl.set('ana@wallet.example', amount => host.externalInvoice(amount))
+
+  // The first call resolves the address, checks the invoice and makes the
+  // locks for what follows. It pays nothing but its own lock.
+  const binding = hostCallsOf(host, () => {
+    const bound = host.ok('claimLnpoolPayout', {...match[1], destination: 'ana@wallet.example'})
+    assert.equal(bound.bound, true)
+    assert.equal(bound.match.settlement.status, 'paying')
   })
-  assert.equal(calls.filter(name => name === 'system.now').length, 1)
-  assert.deepEqual(calls.filter(name => name === 'wallet.payInvoice').length, 2, 'the lock, then the payout')
-  assert.deepEqual(calls.filter(name => name === 'wallet.createInvoicePublic').length, 1, 'the lock for the next attempt')
-  assert.ok(calls.length <= 19, calls.join(', '))
+  assert.deepEqual(binding.filter(name => name.startsWith('wallet.')), ['wallet.fetchLnurlInvoice', 'wallet.createInvoicePublic', 'wallet.createInvoicePublic', 'wallet.payInvoice'])
+  assert.equal(outgoing(host, 'payout').length, 0)
+
+  // The second call reads storage, takes its lock and pays: no address to
+  // resolve, no invoice to ask the node for, nothing written to the match.
+  const paying = hostCallsOf(host, () => {
+    assert.equal(host.ok('claimLnpoolPayout', {...match[1], destination: ''}).match.settlement.status, 'paid')
+  })
+  const before = paying.slice(0, paying.lastIndexOf('wallet.payInvoice'))
+  assert.deepEqual(before, ['storage.get', 'storage.find', 'lightning.verifyPreimage', 'storage.find', 'wallet.payInvoice', 'storage.get', 'storage.find', 'system.now', 'storage.set'])
+  assert.equal(paying.filter(name => name === 'system.now').length, 1)
+  assert.ok(paying.length <= 15, paying.join(', '))
 })

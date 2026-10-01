@@ -30,9 +30,9 @@ What is reused from other projects: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES
 
 ```bash
 cd dev
-npm run check        # syntax checks + 78 tests (backend on a fake host, engine, page logic)
+npm run check        # syntax checks + 82 tests (backend on a fake host, engine, page logic)
 npm run build:wasm   # bundle + jco componentize -> ../wasm/module.wasm
-e2e/run.sh           # 73 checks against your LNbits checkout, on a throwaway data folder
+e2e/run.sh           # 79 checks against your LNbits checkout, on a throwaway data folder
 ```
 
 `build:wasm` needs network access the first time (npx fetches jco 1.19.0).
@@ -105,6 +105,15 @@ rail-after-contact rule.
   is none or it failed.
 - After a payout that did not go through, the next claim has to come within
   the LNbits invoice expiry (one hour by default) of the last one.
+- "UNCONFIRMED" on the owner page means a payment was started and LN Pool
+  never heard how it ended, usually because the Lightning payment took longer
+  than LNbits allows one extension call (5 seconds by default). The money has
+  often arrived. Look in the wallet's payments for "LN Pool payout" with the
+  match id. LN Pool confirms it by itself when the player presses "Check the
+  payment again" while the wallet holds the prize plus the routing reserve;
+  nothing is sent twice. No other destination is accepted for that match.
+- If payouts are often slow, raise LN Pool's "Max execution" runtime limit in
+  LNbits, for example to 15000 ms.
 - Do not upgrade the extension while matches are in play.
 - LNbits' default runtime limits are enough. The dearest call uses under a
   quarter of the default fuel budget. See "Fuel" in the design notes.

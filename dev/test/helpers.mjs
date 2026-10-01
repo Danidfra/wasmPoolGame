@@ -44,8 +44,10 @@ export function createHost({float = FLOAT} = {}) {
     published: [],
     writes: [], // every storage write, in order
     hostCalls: [], // every host function the guest called, in order
+    onHostCall: null, // (name) => void, runs before each host call
     beforePay: null, // (bolt11) => void, runs while a payment is "in flight"
     refusePayments: null, // (invoice) => error string | null: LNbits refuses before sending anything
+    cutOff: null, // (invoice) => true: the payment is made, and LNbits stops the invocation before it hears
     failPayments: null, // (invoice) => reason | null: the node tries and reports failure
     nodeStatus: null, // (invoice) => 'failed' | 'success' | 'pending': the node, asked again about a failed payment
     lnurl: new Map() // address -> amount => bolt11
@@ -164,6 +166,10 @@ export function createHost({float = FLOAT} = {}) {
       if (invoice.stayPending) return {ok: true, success: false, pending: true, paymentHash: invoice.paymentHash}
       invoice.payment = 'success'
       pay()
+      // LNbits' time limit for the call ran out while the node was paying.
+      // The payment is not cancelled; the guest never runs again. Unwinding
+      // out of the guest here leaves storage exactly as a trap would.
+      if (host.cutOff && host.cutOff(invoice)) throw new Error('wasm trap: interrupt')
       // `leavePending`: it went through just after LNbits stopped waiting.
       if (invoice.leavePending) return {ok: true, success: false, pending: true, paymentHash: invoice.paymentHash}
       return {ok: true, success: true, pending: false, paymentHash: invoice.paymentHash}
@@ -217,6 +223,7 @@ export function createHost({float = FLOAT} = {}) {
         name,
         (...args) => {
           host.hostCalls.push(prefix + '.' + name)
+          if (host.onHostCall) host.onHostCall(prefix + '.' + name)
           return fn(...args)
         }
       ])
@@ -237,6 +244,13 @@ export function createHost({float = FLOAT} = {}) {
     const result = host.call(name, payload)
     if (result.ok !== true) throw new Error(name + ': ' + result.error)
     return result.data
+  }
+
+  // Claim the way the page does: the first call records the invoice, and
+  // when the backend says so, a second call pays it.
+  host.claim = payload => {
+    const data = host.ok('claimLnpoolPayout', payload)
+    return data.bound ? host.ok('claimLnpoolPayout', payload) : data
   }
 
   // Settle a buy-in invoice the way LNbits does: money arrives, then the

@@ -24,7 +24,14 @@ const MAX_FEE_PERCENT = 50
 const JOIN_HOLD_SECONDS = 180
 const MAX_JOIN_ATTEMPTS = 20
 const LOBBY_SIZE = 50
-const MAX_PAYOUT_ATTEMPTS = 20
+const MAX_PAYOUT_ATTEMPTS = 30
+// LNbits stops a call after wasm_runtime_max_execution_ms (5 s by default),
+// time spent in host calls included, and itself waits up to 5 s for a
+// Lightning payment. A call that has already used this much of its time does
+// not take a settlement lock: a binding must not be cut off before it is
+// recorded, and a payment should start with the whole deadline ahead of it.
+const BIND_BUDGET_MS = 3500
+const PAY_BUDGET_MS = 1000
 // How long a payout attempt is left alone before the next claim looks into
 // it. Only saves work: nothing about safety depends on these.
 const SETTLING_SECONDS = 20
@@ -384,16 +391,26 @@ export function claimLnpoolPayout(requestJson) {
       throw new Error('This payout has been tried too many times. The hall operator has to settle it.')
     }
 
-    // Decide what to pay before taking the lock, so that nothing the player
-    // can get wrong uses the lock up. While a payment of the bound invoice may
-    // exist, that invoice is the only thing this match pays, whatever the
-    // player typed.
-    const invoice = before.state === 'held'
-      ? {bolt11: last.bolt11, paymentHash: last.payment_hash}
-      : payoutInvoice(match, due, request.destination)
+    // A payout takes two attempts, in two calls. The first binds: it resolves
+    // and checks the destination, which can be slow, and records the invoice
+    // without paying anything. The second pays, and does nothing slow before
+    // the payment. While a payment of the bound invoice may exist, and once
+    // an invoice is bound, that invoice is what the next attempt pays,
+    // whatever the player typed.
+    const paying = before.state === 'held' || (!!last && last.status === 'bound')
+    const invoice = paying ? {bolt11: last.bolt11, paymentHash: last.payment_hash} : payoutInvoice(match, due, request.destination)
+    // A binding makes the locks for the two attempts after it, so that the
+    // paying attempt does not have to ask the node for an invoice first.
+    const ahead = paying ? [] : [settlementLockInvoice(match.id), settlementLockInvoice(match.id)]
+    const [lock, spare] = String(last ? last.next_lock : match.lock_bolt11).split(' ')
+    if (elapsedMs() > (paying ? PAY_BUDGET_MS : BIND_BUDGET_MS)) {
+      // Nothing has been taken or recorded. The page asks again.
+      if (paying) return {match: matchView(match, players, seats, me), settling: true}
+      throw new Error('That took too long to set up. Nothing was sent: claim again.')
+    }
     const n = attempts.length + 1
-    if (!takeSettlementLock(match, last ? last.next_lock : match.lock_bolt11)) {
-      // Another claim got there first and is paying.
+    if (!takeSettlementLock(match, lock)) {
+      // Another claim got there first.
       return {match: matchView(storage.get(MATCHES, match.id) || match, players, seats, me), settling: true}
     }
 
@@ -413,34 +430,56 @@ export function claimLnpoolPayout(requestJson) {
       })
       throw new Error('The match changed while it was being settled. The hall operator has to settle it.')
     }
-    const target = now.state === 'held' ? {bolt11: now.last.bolt11, paymentHash: now.last.payment_hash} : invoice
-
-    // The lock for the attempt after this one is made before paying, so that
-    // a call cut off in the middle of the payment can still be followed up.
-    let nextLock = ''
-    try {
-      nextLock = settlementLockInvoice(match.id)
-    } catch (_error) {
-      // Without it this is the last automatic attempt; it can still pay.
-    }
     const createdAt = timeNow()
-    const attempt = storage.set(PAYOUTS, {
+    const row = {
       id: match.id + '-' + n,
       match_id: match.id,
       n,
       seat: due.seat,
       amount: due.amount,
+      detail: '',
+      created_at: createdAt,
+      updated_at: createdAt
+    }
+
+    if (!paying && now.state !== 'held') {
+      const bound = storage.set(PAYOUTS, {
+        ...row,
+        bolt11: invoice.bolt11,
+        payment_hash: invoice.paymentHash,
+        status: 'bound',
+        next_lock: ahead.join(' ')
+      })
+      const waiting = recordSettlement(fresh, [...earlier, bound])
+      poke(waiting)
+      // `bound` tells the page to claim again straight away: that call pays.
+      return {match: matchView(waiting, players, seats, me), settling: true, bound: true}
+    }
+
+    const target = now.state === 'held' ? {bolt11: now.last.bolt11, paymentHash: now.last.payment_hash} : invoice
+    // The lock for the attempt after this one has to exist before the payment
+    // is made, so that a call cut off during the payment can be followed up.
+    // After a binding it is already there.
+    let nextLock = spare || ahead[0] || ''
+    if (!nextLock) {
+      try {
+        nextLock = settlementLockInvoice(match.id)
+      } catch (_error) {
+        // Without it this is the last automatic attempt; it can still pay.
+      }
+    }
+    const attempt = storage.set(PAYOUTS, {
+      ...row,
       bolt11: target.bolt11,
       payment_hash: target.paymentHash,
       status: 'started',
-      detail: '',
-      next_lock: nextLock,
-      created_at: createdAt,
-      updated_at: createdAt
+      next_lock: nextLock
     })
-    recordSettlement(fresh, [...earlier, attempt])
+    if (fresh.payout_status !== 'paying') recordSettlement(fresh, [...earlier, attempt])
 
-    // The one call this attempt makes.
+    // The one call this attempt makes. If LNbits stops this invocation while
+    // it runs, the payment still completes or fails on its own, nothing below
+    // happens, and the row above stays `started`: a payment may exist.
     const outcome = payoutOutcome(wallet.payInvoice({
       walletId: match.wallet_id,
       paymentRequest: target.bolt11,
@@ -567,7 +606,8 @@ const NOTHING_SENT = [
   /^(missing background payment grant|missing wallet background grant|background grant disabled|payment exceeds max amount|external destination not allowed)$/
 ]
 
-// What one call to pay a payout invoice proved.
+// What one call to pay a payout invoice proved. (A `bound` attempt made no
+// such call; a `started` one has not said what its call proved.)
 //   paid     the invoice is paid
 //   pending  LNbits has a payment of it in flight
 //   refused  this call sent nothing (it says nothing about other calls)
@@ -595,16 +635,18 @@ function payoutOutcome(response) {
 //              paid
 //   released   no payment of any invoice this match was bound to exists or
 //              can still be made: a new invoice may be bound
-// An invoice is clear only if every attempt on it was refused, or LNbits has
-// sealed it (`dead`). One attempt that started and never reported keeps it
-// held for good; that is the price of never paying two invoices.
+// An invoice is clear only if every attempt on it sent nothing (`bound`,
+// `refused`), or LNbits has sealed it (`dead`). One attempt that started and
+// never reported, for instance because LNbits stopped the call during the
+// payment, keeps it held for good: that is the price of never paying two
+// invoices.
 function settlementOf(attempts) {
   const last = attempts[attempts.length - 1] || null
   const paid = attempts.find(attempt => attempt.status === 'paid')
   if (paid) return {state: 'paid', last: paid}
   const open = new Map()
   for (const attempt of attempts) {
-    if (attempt.status === 'refused') {
+    if (attempt.status === 'refused' || attempt.status === 'bound') {
       if (!open.has(attempt.bolt11)) open.set(attempt.bolt11, false)
     } else {
       open.set(attempt.bolt11, attempt.status !== 'dead')
@@ -612,13 +654,14 @@ function settlementOf(attempts) {
   }
   if (!last) return {state: 'unclaimed', last}
   if (![...open.values()].some(Boolean)) return {state: 'released', last}
-  // A refused call adds nothing to what is known about the bound invoice.
-  return {state: 'held', last, known: [...attempts].reverse().find(attempt => attempt.status !== 'refused')}
+  // An attempt that sent nothing adds nothing to what is known about the
+  // bound invoice.
+  return {state: 'held', last, known: [...attempts].reverse().find(attempt => attempt.status !== 'refused' && attempt.status !== 'bound')}
 }
 
 // The match row carries a copy of the settlement for the pages and lists. It
 // is for display only; claims are decided on the attempt rows.
-//   paying       an attempt is under way
+//   paying       an invoice is bound and about to be paid, or being paid
 //   pending      LNbits has the payment in flight
 //   paid
 //   refused      nothing was sent; the claim can be made again, to any wallet
@@ -645,7 +688,7 @@ function settlementShown(attempts) {
   const {state, last, known} = settlementOf(attempts)
   if (state === 'unclaimed') return {status: '', detail: ''}
   if (state === 'paid') return {status: 'paid', detail: ''}
-  if (state === 'released') return {status: 'refused', detail: last.detail}
+  if (state === 'released') return last.status === 'bound' ? {status: 'paying', detail: ''} : {status: 'refused', detail: last.detail}
   if (known.status === 'started' && known === last) return {status: 'paying', detail: ''}
   const check = last.status === 'refused' ? ' Last check: ' + last.detail : ''
   if (known.status === 'pending') return {status: 'pending', detail: check.trim()}
@@ -973,14 +1016,21 @@ function parseJsonObject(value) {
 // The host clock, read at most once per invocation: every host call costs
 // fuel, and one call needs only one idea of what time it is.
 let invocationTime = 0
+let invocationStart = 0
 
 function timeNow() {
   if (!invocationTime) invocationTime = system.now()
   return invocationTime
 }
 
+// Milliseconds this invocation has been running, by the guest's own clock.
+function elapsedMs() {
+  return Date.now() - invocationStart
+}
+
 function runJson(fn) {
   invocationTime = 0
+  invocationStart = Date.now()
   try {
     return JSON.stringify({ok: true, data: fn()})
   } catch (error) {

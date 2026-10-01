@@ -168,6 +168,7 @@
 
   // What one recorded call to pay a payout invoice proved.
   const PAYOUT_WORDS = {
+    bound: 'invoice recorded, nothing sent',
     started: 'started, result never recorded: it may have been paid',
     paid: 'paid',
     pending: 'in flight when last asked',

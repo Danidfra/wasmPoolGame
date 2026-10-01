@@ -15,4 +15,4 @@ mkdir -p "$LNPOOL_E2E_WORK/data/wasm_extensions" "$LNPOOL_E2E_WORK/extroot/exten
 ln -s "$EXT" "$LNPOOL_E2E_WORK/data/wasm_extensions/lnpool"
 # LNbits resolves its static files relative to the checkout.
 cd "$LNBITS_DIR"
-.venv/bin/python "$HERE/run_e2e.py" 2>&1 | grep -E "^  (ok|FAIL|fuel)|checks passed|API calls|Loaded WASM|Traceback|Error"
+.venv/bin/python "$HERE/run_e2e.py" 2>&1 | grep -E "^  (ok|FAIL|fuel|\()|checks passed|API calls|Loaded WASM|Traceback|Error"

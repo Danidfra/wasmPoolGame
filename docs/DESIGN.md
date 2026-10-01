@@ -76,7 +76,8 @@ create match ─▶ buy-in invoice for seat 1, plus a 1 sat settlement lock
 join         ─▶ buy-in invoice for seat 2
 paid events  ─▶ seats taken; when both are, status = active
 agreed winner or concession ─▶ status = finished
-claim        ─▶ lock taken ─▶ attempt recorded ─▶ payout invoice paid
+claim        ─▶ lock taken ─▶ invoice recorded
+claim again  ─▶ lock taken ─▶ payment started ─▶ payout invoice paid
 ```
 
 States: `open → active → finished`, plus `open → cancelled` (the first player
@@ -115,14 +116,18 @@ one payout; the other three were told the match was settling.
 
 ### Payout attempts
 
-Every call that pays a payout invoice is one **attempt**, recorded in
-`lnpool_payouts` and made by the one invocation that holds the attempt's lock:
+Settlement is a chain of **attempts**, recorded in `lnpool_payouts`. Each is
+made by the one invocation that holds the attempt's lock. The first lock is
+created with the match; every attempt leaves the lock for the next one in its
+row before it does anything that can be cut off.
 
-1. take the lock (the first is created with the match; each attempt creates
-   the lock for the next one before it pays);
-2. write the attempt row: which invoice is about to be paid, status `started`;
-3. call LNbits once;
-4. write what that call proved.
+A payout takes two attempts, in two calls from the page:
+
+- **Binding.** Resolve the Lightning address, check the invoice, create the
+  locks for the two attempts that follow, take the lock, write the row with
+  status `bound`. Nothing is paid.
+- **Paying.** Take the lock, write a row with the bound invoice and status
+  `started`, call LNbits once, write what that call proved.
 
 Nothing else ever pays a payout invoice, so the rows are a complete list of
 the calls that could have moved the pot. Only the holder of lock *n* writes
@@ -139,6 +144,7 @@ What one call can prove:
 | `dead` | LNbits holds a failed payment of this invoice and will never send it again | "Payment is failed node, retrying is not possible." |
 | `unknown` | anything else, including an error text this code does not know | |
 | `started` | the attempt never reported: cut off, or still running | |
+| `bound` | this attempt only recorded the invoice; it made no call | |
 
 What the rows prove about the match:
 
@@ -149,7 +155,8 @@ What the rows prove about the match:
   the same invoice, which is how the backend finds out how a payment ended:
   the host API has no call to look a payment up.
 - **released**: for every invoice the match was ever bound to, either every
-  attempt on it was `refused`, or LNbits has sealed it (`dead`). No payment of
+  attempt on it sent nothing (`bound`, `refused`), or LNbits has sealed it
+  (`dead`). No payment of
   it exists and none can be made, because nobody pays outside an attempt. The
   next attempt may bind a new invoice, to the same wallet or another.
 
@@ -160,10 +167,53 @@ a refusal says nothing about what another call did. An error text that is not
 on the list keeps it bound too. Those matches end with the operator. A second
 destination while the first payment might exist is never accepted.
 
+A freshly bound invoice is released in this sense, since nothing has been
+sent, but the next attempt always pays it rather than binding another.
+
 `dead` rests on the funding source: the node reported the payment failed when
 it was sent and again when LNbits asked later, and LNbits refuses to send an
 invoice it already has a payment for. That is the same evidence LNbits itself
 uses to give the money back to a wallet.
+
+### The time limit, and payments that outlive the call
+
+LNbits stops an extension call after `wasm_runtime_max_execution_ms` (5 s by
+default). The clock runs during host calls too. When it runs out LNbits
+interrupts the guest, which shows in the log as `wasm trap: interrupt`; it
+does not cancel a host call that is under way. LNbits also waits up to 5 s
+for the node to pay an invoice (`lnbits_funding_source_pay_invoice_wait_seconds`).
+
+So a real Lightning payment made inside a call can use up the call's time.
+The payment still completes or fails on its own; the guest is stopped the
+moment the host call returns, before it can write the result. That is why
+binding and paying are separate calls: the paying call does nothing slow
+before the payment (no address to resolve, no invoice to ask the node for, a
+few storage reads and one write), so the payment has almost the whole limit.
+A call that has already used more than a second before taking its lock does
+not start a payment at all, and a binding that has used more than 3.5 s
+gives up before its lock, so that it cannot be cut off between taking the
+lock and writing its row.
+
+A payment slower than the limit is still cut off. Then:
+
+- the row says `started` and stays that way; the match is **held**;
+- the page asks again after 20 s; that attempt calls LNbits for the same
+  invoice, and LNbits answers from the payment it already has ("already
+  paid", "still pending") without sending anything;
+- LNbits only gets that far if the wallet holds the amount plus the reserve,
+  because it checks the balance first. From a wallet the payout emptied the
+  check is refused, the match shows `unconfirmed`, and it stays bound. It
+  turns to `paid` on the first check made while the wallet holds enough, or
+  the operator confirms it in the wallet's payment list and closes the match.
+
+A timeout never frees an invoice. Verified on LNbits core with a node made
+to take longer than the limit: the invoice was paid, the call was stopped,
+no other destination was accepted, and the next check with funds in the
+wallet recorded it as paid without a second payment.
+
+An operator who expects slow routes can raise this extension's execution
+limit in LNbits (runtime limits, for example to 15 000 ms). Nothing above
+depends on it.
 
 The match row keeps a copy of the outcome (`payout_status`) for pages and
 lists: `paying`, `pending`, `paid`, `refused` (released: claim again, any
@@ -203,9 +253,9 @@ the same invoice. `dev/e2e/run_e2e.py` replays it against LNbits core.
 
 ### What the lock costs
 
-- **One 1 sat invoice per match and one per payout attempt** on the hall's
-  funding source. A used one was paid to the wallet itself; the last one made
-  is never paid and expires.
+- **1 sat invoices on the hall's funding source**: one per match, and two
+  per binding. A normal payout uses two and leaves one unpaid, which
+  expires.
 - **It expires.** Core gives extension invoices the instance default expiry
   (`LIGHTNING_INVOICE_EXPIRY`, 3600 s by default) and the host API cannot set
   another. A match not claimed within that time of being created cannot be
@@ -219,7 +269,8 @@ the same invoice. `dev/e2e/run_e2e.py` replays it against LNbits core.
   pending" to tell "someone else is settling" from "cannot settle", and the
   texts in the table above. If core rewords them, payouts fail closed: a
   refusal is no longer recognised, and the invoice stays bound.
-- **At most 20 attempts per match.** After that the operator settles.
+- **At most 30 attempts per match**, which is 15 payouts tried. After that
+  the operator settles.
 
 ### Other money rules
 
@@ -251,14 +302,14 @@ dearest invocation of each kind:
 | owner list, 100 rows (the largest page the API allows) | 23 |
 | owner list, 20 rows | 12 |
 | lobby, 50 open matches (the most it lists) | 14 |
-| claim a payout, full-size table | 15 (17 at most) |
+| claim a payout, full-size table (the paying call) | 14 (16 at most) |
 | report a result (the one that commits) | 12 |
 | create a match, record a shot, join, paid event | 11 |
 | read a match | 10 |
 
 About 9 million of every call is the JavaScript runtime starting up. What the
-extension itself adds is small: a claim makes 19 host calls and spends 6
-million on top of the start-up cost.
+extension itself adds is small: the call that pays a claim makes 15 host
+calls and spends 5 million on top of the start-up cost.
 
 **The build toolchain decides this, and it is pinned.** The component is built
 with jco 1.19.0, which uses componentize-js 0.20.0. Newer versions generate

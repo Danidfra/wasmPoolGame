@@ -631,6 +631,9 @@
       const data = await bridge.api('POST', matchPath('/claim'), withCreds({destination: app.claimDestination}))
       UI.busy('claim-button', false)
       applyView(data.match)
+      // The first call only records the invoice; the next one pays it, with
+      // the whole of LNbits' time limit for the payment.
+      if (data.bound) return claim('', false)
       // Another request is settling this match right now; look again shortly.
       if (data.settling) window.setTimeout(() => claim('', false), 2500)
     } catch (error) {

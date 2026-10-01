@@ -99,6 +99,10 @@ async def api(http, method, path, body=None, usr=None):
         data = response.text[:200]
     if response.status_code != 200:
         return {"ok": False, "error": f"HTTP {response.status_code}: {data}"}
+    # A claim is two calls, as the page makes them: the first records the
+    # invoice, the second pays it.
+    if path.endswith("/claim") and data.get("ok") and data["data"].get("bound"):
+        return await api(http, method, path, body, usr)
     return data
 
 
@@ -412,7 +416,7 @@ async def scenario(http):
     again = (await ok(http, "POST", path7 + "/claim", {**creds7[1], "destination": second}))["match"]
     check("claiming again while the wallet is short is refused again, and binds nothing", again["settlement"]["status"] == "refused" and await balance(tight_wallet) == 10 and second_hash not in funding.paid_invoices)
     detail = await ok(http, "GET", f"/matches/{match7}/admin", usr=tight_owner.id)
-    check("the operator sees the match flagged and both attempts", detail["match"]["payoutStatus"] == "refused" and [p["status"] for p in detail["payouts"]] == ["refused", "refused"], str([p["status"] for p in detail["payouts"]]))
+    check("the operator sees the match flagged and both attempts", detail["match"]["payoutStatus"] == "refused" and [p["status"] for p in detail["payouts"]] == ["bound", "refused", "bound", "refused"], str([p["status"] for p in detail["payouts"]]))
 
     await update_wallet_balance(wallet=tight_wallet, amount=2)  # the operator tops up
     third, third_hash = await outside_invoice(9, "third wallet")
@@ -472,9 +476,78 @@ async def scenario(http):
     held = (await ok(http, "POST", path9 + "/claim", {**creds9[1], "destination": other}))["match"]
     check("...and while LNbits cannot confirm that failure, another destination is not paid", held["settlement"]["status"] in ("unconfirmed", "failed") and other_hash not in funding.paid_invoices and await balance(hall_wallet) == hall_mid, held["settlement"]["status"])
 
+    # --- a slow node, and LNbits' time limit for one call ---------------------
+    # LNbits stops an extension call after wasm_runtime_max_execution_ms, host
+    # calls included, and does not cancel a payment that is under way. On the
+    # first real payout the money arrived and the call was stopped before it
+    # could record that.
+    delays = {}  # bolt11 -> seconds the node takes to pay it
+    node_pay = funding.pay_invoice
+
+    async def slow_pay(bolt11, fee_limit_msat):
+        await asyncio.sleep(delays.get(bolt11, 0))
+        return await node_pay(bolt11, fee_limit_msat)
+
+    funding.pay_invoice = slow_pay
+    default_limit = settings.wasm_runtime_max_execution_ms
+
+    match11, path11, creds11 = await new_match()
+    await finish(path11, creds11, 1)
+    patient, patient_hash = await outside_invoice(2000, "a node that takes its time")
+    delays[patient] = 3.5
+    started = time.perf_counter()
+    slow_paid = await api(http, "POST", path11 + "/claim", {**creds11[1], "destination": patient})
+    took = time.perf_counter() - started
+    check("a payment the node takes 3.5 s over is paid and recorded within the default 5 s limit", default_limit == 5000 and slow_paid.get("ok") is True and slow_paid["data"]["match"]["settlement"]["status"] == "paid" and patient_hash in funding.paid_invoices, f"{took:.1f} s" if slow_paid.get("ok") else slow_paid.get("error", "")[:80])
+
+    # The real case: a hall wallet with just enough for a 9 sat prize, and a
+    # call that runs out of time while the node is paying. The limit is
+    # lowered for this one call so that the test does not have to be slow.
+    exact_owner = await create_user_account()
+    exact_wallet = await create_wallet(user_id=exact_owner.id, wallet_name="hall with just enough")
+    await update_wallet_balance(wallet=exact_wallet, amount=2)
+    await http.put("/api/v1/extension/lnpool/enable", params={"usr": exact_owner.id})
+    exact = (await ok(http, "PUT", "/hall", {"enabled": True, "walletId": exact_wallet.id, "walletName": "exact", "minStake": 5, "maxStake": 5000, "feePercent": 10}, usr=exact_owner.id))["hall"]
+    await http.post("/api/v1/extension/lnpool/permissions/background-payment", params={"usr": exact_owner.id}, json={"wallet_id": exact_wallet.id, "max_amount": 10000, "destination_policy": "external_allowed"})
+    created = await ok(http, "POST", f"/halls/{exact['id']}/matches", {"name": "Ana", "stake": 5})
+    match12 = created["match"]["id"]
+    path12 = f"/matches/{match12}"
+    await pay_invoice(wallet_id=ana.id, payment_request=created["paymentRequest"])
+    await wait_for(lambda: seat_paid(http, path12, 0), "seat 1 to be paid")
+    joined = await ok(http, "POST", path12 + "/join", {"name": "Bo"})
+    await pay_invoice(wallet_id=bo.id, payment_request=joined["paymentRequest"])
+    await wait_for(lambda: status_is(http, path12, "active"), "match to start")
+    creds12 = {1: {"playerId": created["playerId"], "token": created["token"]}, 2: {"playerId": joined["playerId"], "token": joined["token"]}}
+    await finish(path12, creds12, 1)
+
+    arrived, arrived_hash = await outside_invoice(9, "arrives while the call is stopped")
+    delays[arrived] = 2.5
+    print("  (LNbits logs a traceback for the next call: it is the one stopped on purpose)")
+    settings.wasm_runtime_max_execution_ms = 1500
+    stopped = await api(http, "POST", path12 + "/claim", {**creds12[1], "destination": arrived})
+    settings.wasm_runtime_max_execution_ms = default_limit
+    stopped_call = fuelprobe.last("claim-lnpool-payout")
+    check("LNbits stops the paying call (time, not fuel) and the payment arrives all the same", stopped.get("ok") is False and "500" in stopped.get("error", "") and arrived_hash in funding.paid_invoices and await balance(exact_wallet) == 3, f"{stopped.get('error', '')[:40]}, {stopped_call['total'] / 1e6:.1f}M fuel used, wallet {await balance(exact_wallet)}")
+    detail = await ok(http, "GET", f"/matches/{match12}/admin", usr=exact_owner.id)
+    check("...what is left behind: the invoice recorded, a payment started, no result", [p["status"] for p in detail["payouts"]] == ["bound", "started"] and detail["match"]["payoutStatus"] == "paying", str([p["status"] for p in detail["payouts"]]))
+
+    elsewhere, elsewhere_hash = await outside_invoice(9, "another wallet")
+    soon = await api(http, "POST", path12 + "/claim", {**creds12[1], "destination": elsewhere})
+    check("a claim straight afterwards does nothing, whatever wallet it names", soon.get("ok") is True and soon["data"].get("settling") is True and elsewhere_hash not in funding.paid_invoices)
+    async with Database("ext_lnpool").connect() as conn:  # half a minute later
+        await conn.execute(f"UPDATE {_table_ref_for_schema('lnpool', 'lnpool_payouts')} SET updated_at = updated_at - 60 WHERE match_id = :id", {"id": match12})  # noqa: S608
+    unknown = (await ok(http, "POST", path12 + "/claim", {**creds12[1], "destination": elsewhere}))["match"]
+    check("the follow-up cannot confirm it from a wallet the payout emptied: unconfirmed, and no other wallet is paid", unknown["settlement"]["status"] == "unconfirmed" and elsewhere_hash not in funding.paid_invoices and await balance(exact_wallet) == 3, f"{unknown['settlement']['status']}: {unknown['settlement'].get('detail', '')[-60:]}")
+    await update_wallet_balance(wallet=exact_wallet, amount=8)  # the prize and the reserve are in the wallet again
+    async with Database("ext_lnpool").connect() as conn:
+        await conn.execute(f"UPDATE {_table_ref_for_schema('lnpool', 'lnpool_payouts')} SET updated_at = updated_at - 60 WHERE match_id = :id", {"id": match12})  # noqa: S608
+    found = (await ok(http, "POST", path12 + "/claim", {**creds12[1], "destination": elsewhere}))["match"]
+    check("once the wallet could pay it again, LNbits answers from its record: paid, and nothing is sent", found["settlement"]["status"] == "paid" and await balance(exact_wallet) == 11 and elsewhere_hash not in funding.paid_invoices, f"{found['settlement']['status']}, wallet {await balance(exact_wallet)}")
+    funding.pay_invoice = node_pay
+
     check("fuel was measured for every call", FUEL_MEASURED and len(fuelprobe.calls) > 0, f"{len(fuelprobe.calls)} invocations")
-    cut_off = [call["export"] for call in fuelprobe.calls if not call["ok"]]
-    check("no call was cut off by the runtime", not cut_off, ", ".join(sorted(set(cut_off))))
+    cut_off = [call for call in fuelprobe.calls if not call["ok"]]
+    check("no call was cut off by the runtime, except the one stopped on purpose above", cut_off == [stopped_call], ", ".join(call["export"] for call in cut_off))
     worst = fuelprobe.worst()
     check(f"no call used more than half of the default fuel limit ({FUEL_BUDGET // 1_000_000}M)", bool(worst) and worst[0]["total"] <= FUEL_BUDGET, f"dearest: {worst[0]['export']} {worst[0]['total'] / 1e6:.1f}M" if worst else "")
     print("\n  fuel  most expensive invocation of each export, in millions (limit 100):")
