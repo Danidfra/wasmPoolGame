@@ -47,6 +47,7 @@ export function createHost({float = FLOAT} = {}) {
     onHostCall: null, // (name) => void, runs before each host call
     beforePay: null, // (bolt11) => void, runs while a payment is "in flight"
     refusePayments: null, // (invoice) => error string | null: LNbits refuses before sending anything
+    failInvoices: false, // the funding source cannot create invoices
     cutOff: null, // (invoice) => true: the payment is made, and LNbits stops the invocation before it hears
     failPayments: null, // (invoice) => reason | null: the node tries and reports failure
     nodeStatus: null, // (invoice) => 'failed' | 'success' | 'pending': the node, asked again about a failed payment
@@ -102,6 +103,7 @@ export function createHost({float = FLOAT} = {}) {
     },
     createInvoicePublic({sourceId, amount, memo, extra}) {
       if (!host.row('lnpool_matches', sourceId)) throw new Error('Public invoice source was not found.')
+      if (host.failInvoices) throw new Error('Unable to connect to the funding source.')
       counter += 1
       const paymentHash = hex64('internal-' + counter)
       const bolt11 = 'lnbc' + amount + 'n1internal' + counter
@@ -246,11 +248,17 @@ export function createHost({float = FLOAT} = {}) {
     return result.data
   }
 
-  // Claim the way the page does: the first call records the invoice, and
-  // when the backend says so, a second call pays it.
+  // Claim the way the page does: resolve a Lightning address if one was
+  // given, record the invoice, pay it. Each step is a call of its own.
   host.claim = payload => {
-    const data = host.ok('claimLnpoolPayout', payload)
-    return data.bound ? host.ok('claimLnpoolPayout', payload) : data
+    let request = payload
+    for (let step = 0; step < 4; step += 1) {
+      const data = host.ok('claimLnpoolPayout', request)
+      if (data.resolved) request = {...payload, destination: data.resolved}
+      else if (data.bound) request = {...payload, destination: ''}
+      else return data
+    }
+    throw new Error('the claim did not finish in four calls')
   }
 
   // Settle a buy-in invoice the way LNbits does: money arrives, then the

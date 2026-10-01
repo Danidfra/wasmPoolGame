@@ -386,7 +386,7 @@
     show('result-text', !!body)
 
     // Payout: the claim form for whoever is owed, a status line for everyone.
-    const payout = V.payout(view, payee)
+    const payout = V.payout(view, payee, model.waited)
     show('claim-form', !!payout.form)
     // One gold button at a time: claiming comes before starting another game.
     $('again').classList.toggle('primary', !payout.form)

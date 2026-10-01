@@ -63,7 +63,7 @@ prize is 9, and LNbits wants 11 in the wallet.
 
 When the wallet is short, the payout is not sent. Nothing is lost: the player
 is told the hall wallet needs funds, the owner page shows the match as "NOT
-SENT", and the player claims again after you have topped up.
+SENT", and the player presses "Try again" after you have topped up.
 
 ## A match
 
@@ -102,28 +102,36 @@ what LNbits said.
 |---|---|---|
 | Sent to your wallet | LNbits confirmed the payment. | Nothing. |
 | Sending | The payment is in flight. | Wait. The page asks again by itself. |
-| Nothing was sent | LNbits refused before sending: the wallet is short of the prize plus the reserve, a limit was hit, or payouts are not authorized. | Fix the cause. The player claims again, to the same wallet or another. |
-| The payment did not go through | The Lightning node reported a failure, for example no route. | The player tries again. Once LNbits confirms the failure, they can name another wallet. |
+| Nothing was sent | LNbits refused before sending: the wallet is short of the prize plus the reserve, a limit was hit, or payouts are not authorized. | Fix the cause. The player presses "Try again"; the invoice already on record is paid. |
+| The payment did not go through | The Lightning node reported a failure, for example no route. | The player tries again. Once LNbits confirms the failure and will not send that invoice again, they can name another wallet. |
 | This payment could not be confirmed | A payment was started and LN Pool never heard how it ended. | See below. |
 
-"Could not be confirmed" usually means the payment took longer than LNbits
-allows one extension call (5 seconds by default). LNbits does not cancel the
-payment, so the money has often arrived. LN Pool cannot look a payment up; it
-can only ask LNbits to pay the same invoice again, which LNbits answers with
-"already paid" without sending anything. LNbits only gets that far while the
-wallet holds the prize plus the reserve.
+A match pays one invoice: the one recorded when the winner first claims. It
+stays the only one until it is paid, or until LNbits holds a failed payment
+of it and refuses to send it again. Naming another wallet in between changes
+nothing.
 
+"Could not be confirmed" usually means the payment took longer than LNbits
+allows one extension call (5 seconds by default; with a slow funding source
+most payouts do). LNbits does not cancel the payment, so the money has often
+arrived. LN Pool cannot look a payment up; it can only ask LNbits to pay the
+same invoice again, which LNbits answers with "already paid" without sending
+anything. LNbits only gets that far while the wallet holds the prize plus
+the reserve.
+
+- The page asks again by itself a few times, then shows "Check the payment
+  again". It never goes on saying "Sending".
 - Look in the wallet's payments for an outgoing "LN Pool payout" with the
   match id. That list is the authority.
 - To let LN Pool confirm it by itself, have the prize plus the reserve in
-  the wallet and let the player press "Check the payment again".
+  the wallet and let the player press "Check the payment again". There is no
+  time limit on that.
 - While a payment might exist, LN Pool never accepts another destination for
   that match. This is deliberate: it would rather leave a match for you to
   settle than pay twice.
 
-After a payout that did not go through, the next claim has to come within
-LNbits' invoice expiry (one hour by default) of the last one, and a match has
-to be claimed within that time of being created. After that you settle it by
+The winner has to make the first claim within LNbits' invoice expiry (one
+hour by default) of the match being created. After that you settle it by
 hand.
 
 **Settling by hand.** Open the match on the owner page and press "Mark as
@@ -168,9 +176,9 @@ Do not upgrade the extension while matches are in play.
 
 ```bash
 cd dev
-npm run check            # syntax checks and 82 unit tests
+npm run check            # syntax checks and 92 unit tests
 npm run build:wasm       # bundle, then jco componentize -> ../wasm/module.wasm
-LNBITS_DIR=/path/to/lnbits e2e/run.sh   # 79 checks against LNbits itself
+LNBITS_DIR=/path/to/lnbits e2e/run.sh   # 85 checks against LNbits itself
 npm run check:release    # is the archive for this commit installable?
 ```
 

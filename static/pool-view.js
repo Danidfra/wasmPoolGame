@@ -33,11 +33,29 @@
     return /^Payout failed: /.test(view.note || '') ? '' : view.note || ''
   }
 
+  // How long "sending" may be shown without a fresh answer from the backend.
+  const SENDING_SECONDS = 20
+  const PENDING_SECONDS = 150
+
+  // The payout state to show. The backend already stops saying "paying" once
+  // a payment has had its time; this does the same on the page's own clock,
+  // so that a page which gets no more answers cannot go on saying "sending".
+  // `waited` is the seconds since this view arrived.
+  function payoutStatus(view, waited) {
+    // `refused` is what earlier versions called a payment that was not sent.
+    const status = view.settlement.status === 'refused' ? 'unsent' : view.settlement.status
+    const age = (Number(view.serverTime) || 0) - (Number(view.updatedAt) || 0) + (Number(waited) || 0)
+    if (status === 'paying' && age > SENDING_SECONDS) return 'unconfirmed'
+    if (status === 'pending' && age > PENDING_SECONDS) return 'unconfirmed'
+    return status
+  }
+
   // What the result screen offers and says about the payout.
   //   form  'destination' asks where to send it, 'retry' is a button only
-  //         (the backend will pay the invoice it already has), '' is no form
-  function payout(view, payee) {
-    const state = view.settlement.status
+  //         (the backend pays, or asks about, the invoice it already has),
+  //         '' is no form
+  function payout(view, payee, waited) {
+    const state = payoutStatus(view, waited)
     const amount = sats(view.settlement.amount) + ' sats'
     const reason = String(view.settlement.detail || '').replace(/ ?Last check: .*$/, '').replace(/\.$/, '')
     const none = {form: '', button: '', line: '', tone: ''}
@@ -50,6 +68,18 @@
     if (sending) return {...none, line: 'Sending ' + amount, tone: 'sending'}
     if (state === 'paid') return {...none, line: amount + ' sent to your wallet', tone: 'paid'}
     if (state === 'manual') return {...none, line: 'This match has to be paid out by the hall operator.', tone: 'bad'}
+    if (state === 'unsent') {
+      const short = /reserve|insufficient balance/i.test(reason)
+      return {
+        form: 'retry',
+        button: 'Try again',
+        line: short
+          ? 'Nothing was sent: the hall wallet does not hold enough for the payout and the Lightning routing-fee reserve. Your ' + amount +
+            ' are safe. Ask the hall operator to top up the wallet, then try again.'
+          : 'Nothing was sent' + (reason ? ' (' + reason + ')' : '') + '. Your ' + amount + ' are safe. Try again.',
+        tone: 'bad'
+      }
+    }
     if (state === 'failed') {
       return {
         form: 'retry',
@@ -62,20 +92,13 @@
       return {
         form: 'retry',
         button: 'Check the payment again',
-        line: 'This payment could not be confirmed. Look in your wallet: it may have arrived. If it has not, ask the hall operator.',
+        line: 'This payment could not be confirmed. Look in your wallet: it may have arrived. If it has not, check again, or ask the hall operator.',
         tone: 'bad'
       }
     }
     const claim = {form: 'destination', button: 'Claim ' + amount, line: '', tone: ''}
-    if (state !== 'refused') return claim
-    let line = 'Nothing was sent' + (reason ? ' (' + reason + ')' : '') + '. Claim again, to this or another wallet.'
-    if (/reserve|insufficient balance/i.test(reason)) {
-      line = 'Nothing was sent: the hall wallet does not hold enough for the payout and the Lightning routing-fee reserve. Your ' + amount +
-        ' are safe. Ask the hall operator to top up the wallet, then claim again.'
-    } else if (/failed node/i.test(reason)) {
-      line = 'That payment failed and will not be tried again. Claim again with a new invoice or another wallet.'
-    }
-    return {...claim, line, tone: 'bad'}
+    if (state !== 'released') return claim
+    return {...claim, line: 'That payment failed and will not be tried again. Claim again with a new invoice or another wallet.', tone: 'bad'}
   }
 
   function initial(name) {
@@ -243,6 +266,7 @@
     sats,
     stakePresets,
     matchNote,
+    payoutStatus,
     payout,
     initial,
     groupKind,

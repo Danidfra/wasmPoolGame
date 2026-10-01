@@ -7,10 +7,9 @@ import {lightning, storage, system, wallet, websocket} from './lnbits-sdk.js'
 //
 // Storage is last-writer-wins with no compare-and-set, so every row below has
 // as few writers as possible and nothing here relies on a read-check-write
-// being atomic. The one step that must not happen twice at once, paying a
-// match out, is guarded by `takeSettlementLock`: every call that pays a payout
-// invoice is one recorded attempt, made by the one invocation holding that
-// attempt's lock.
+// being atomic. The one step that must not happen twice at once, choosing the
+// invoice a match pays out to, is guarded by `takeSettlementLock`. Paying that
+// invoice needs no guard: LNbits pays an invoice at most once.
 
 const HALLS = 'lnpool_halls'
 const MATCHES = 'lnpool_matches'
@@ -24,18 +23,20 @@ const MAX_FEE_PERCENT = 50
 const JOIN_HOLD_SECONDS = 180
 const MAX_JOIN_ATTEMPTS = 20
 const LOBBY_SIZE = 50
-const MAX_PAYOUT_ATTEMPTS = 30
+const MAX_PAYOUT_CALLS = 40
 // LNbits stops a call after wasm_runtime_max_execution_ms (5 s by default),
-// time spent in host calls included, and itself waits up to 5 s for a
-// Lightning payment. A call that has already used this much of its time does
-// not take a settlement lock: a binding must not be cut off before it is
-// recorded, and a payment should start with the whole deadline ahead of it.
-const BIND_BUDGET_MS = 3500
-const PAY_BUDGET_MS = 1000
-// How long a payout attempt is left alone before the next claim looks into
-// it. Only saves work: nothing about safety depends on these.
-const SETTLING_SECONDS = 20
+// time spent in host calls included, and does not cancel a host call that is
+// under way. With a slow funding source a payment alone takes that long, so
+// any call here can be cut off at any point. A call that is already this late
+// does not take the settlement lock.
+const BIND_BUDGET_MS = 2500
+// How long a payment that has started is left alone before anyone asks about
+// it, how often LNbits is asked about one it reports in flight, and how long
+// the pages are told "in flight" without a fresh answer. Only pacing: nothing
+// about safety depends on these.
+const SETTLING_SECONDS = 15
 const RECHECK_SECONDS = 15
+const PENDING_SHOWN_SECONDS = 120
 const MAX_STATE_BYTES = 4096
 const HEX64 = /^[0-9a-f]{64}$/
 
@@ -117,9 +118,10 @@ export function getLnpoolMatchAdmin(requestJson) {
         }))
       },
       players: players.map(player => ({...adminPlayerView(player, seatOf(seats, player)), seat: seatOf(seats, player)})),
-      // Every time a payout was tried, oldest first. This is what settlement
-      // is decided on; the status in the match row is a copy of it.
-      payouts: payoutAttempts(match.id).map(attempt => ({
+      // Every invoice recorded for the payout and every call made to pay it,
+      // oldest first. This is what settlement is decided on; the status in
+      // the match row is a copy of it.
+      payouts: payoutRows(match.id).filter(isPayoutRow).map(attempt => ({
         n: attempt.n,
         seat: attempt.seat,
         amount: attempt.amount,
@@ -374,124 +376,158 @@ export function claimLnpoolPayout(requestJson) {
     if (match.payout_status === 'paid') return {match: matchView(match, players, seats, me)}
     if (match.payout_status === 'manual') throw new Error('This match has to be settled by the hall operator.')
 
-    const attempts = payoutAttempts(match.id)
+    const rows = payoutRows(match.id)
+    const payouts = rows.filter(isPayoutRow)
     // Bound by a version that kept the invoice in the match row.
-    if (!attempts.length && match.payout_bolt11) return {match: matchView(payLegacyInvoice(match), players, seats, me)}
+    if (!payouts.length && match.payout_bolt11) return {match: matchView(payLegacyInvoice(match), players, seats, me)}
 
-    const before = settlementOf(attempts)
-    const last = before.last
-    if (before.state === 'paid') return {match: matchView(recordSettlement(match, attempts), players, seats, me)}
-    if (before.state === 'held') {
-      const age = timeNow() - last.updated_at
-      // Somebody is paying right now, or LNbits was asked a moment ago.
-      if (last.status === 'started' && age < SETTLING_SECONDS) return {match: matchView(match, players, seats, me), settling: true}
-      if (before.known.status === 'pending' && age < RECHECK_SECONDS) return {match: matchView(match, players, seats, me)}
-    }
-    if (attempts.length >= MAX_PAYOUT_ATTEMPTS) {
-      throw new Error('This payout has been tried too many times. The hall operator has to settle it.')
-    }
-
-    // A payout takes two attempts, in two calls. The first binds: it resolves
-    // and checks the destination, which can be slow, and records the invoice
-    // without paying anything. The second pays, and does nothing slow before
-    // the payment. While a payment of the bound invoice may exist, and once
-    // an invoice is bound, that invoice is what the next attempt pays,
-    // whatever the player typed.
-    const paying = before.state === 'held' || (!!last && last.status === 'bound')
-    const invoice = paying ? {bolt11: last.bolt11, paymentHash: last.payment_hash} : payoutInvoice(match, due, request.destination)
-    // A binding makes the locks for the two attempts after it, so that the
-    // paying attempt does not have to ask the node for an invoice first.
-    const ahead = paying ? [] : [settlementLockInvoice(match.id), settlementLockInvoice(match.id)]
-    const [lock, spare] = String(last ? last.next_lock : match.lock_bolt11).split(' ')
-    if (elapsedMs() > (paying ? PAY_BUDGET_MS : BIND_BUDGET_MS)) {
-      // Nothing has been taken or recorded. The page asks again.
-      if (paying) return {match: matchView(match, players, seats, me), settling: true}
-      throw new Error('That took too long to set up. Nothing was sent: claim again.')
-    }
-    const n = attempts.length + 1
-    if (!takeSettlementLock(match, lock)) {
-      // Another claim got there first.
-      return {match: matchView(storage.get(MATCHES, match.id) || match, players, seats, me), settling: true}
-    }
-
-    // From here on this invocation is attempt n, and the only one there will
-    // ever be. Look again: earlier attempts may have finished meanwhile.
-    const fresh = storage.get(MATCHES, match.id)
-    const earlier = payoutAttempts(match.id)
-    const now = settlementOf(earlier)
-    if (now.state === 'paid') return {match: matchView(recordSettlement(fresh || match, earlier), players, seats, me)}
-    const stillDue = fresh ? entitlement(fresh) : null
-    if (!stillDue || stillDue.seat !== due.seat || stillDue.amount !== due.amount || fresh.payout_status === 'manual' || earlier.length !== n - 1) {
-      storage.set(MATCHES, {
-        ...(fresh || match),
-        payout_status: 'manual',
-        note: 'The match changed while it was being settled. Settle it by hand.',
-        updated_at: timeNow()
-      })
-      throw new Error('The match changed while it was being settled. The hall operator has to settle it.')
-    }
-    const createdAt = timeNow()
-    const row = {
-      id: match.id + '-' + n,
-      match_id: match.id,
-      n,
-      seat: due.seat,
-      amount: due.amount,
-      detail: '',
-      created_at: createdAt,
-      updated_at: createdAt
-    }
-
-    if (!paying && now.state !== 'held') {
-      const bound = storage.set(PAYOUTS, {
-        ...row,
-        bolt11: invoice.bolt11,
-        payment_hash: invoice.paymentHash,
-        status: 'bound',
-        next_lock: ahead.join(' ')
-      })
-      const waiting = recordSettlement(fresh, [...earlier, bound])
-      poke(waiting)
-      // `bound` tells the page to claim again straight away: that call pays.
-      return {match: matchView(waiting, players, seats, me), settling: true, bound: true}
-    }
-
-    const target = now.state === 'held' ? {bolt11: now.last.bolt11, paymentHash: now.last.payment_hash} : invoice
-    // The lock for the attempt after this one has to exist before the payment
-    // is made, so that a call cut off during the payment can be followed up.
-    // After a binding it is already there.
-    let nextLock = spare || ahead[0] || ''
-    if (!nextLock) {
-      try {
-        nextLock = settlementLockInvoice(match.id)
-      } catch (_error) {
-        // Without it this is the last automatic attempt; it can still pay.
-      }
-    }
-    const attempt = storage.set(PAYOUTS, {
-      ...row,
-      bolt11: target.bolt11,
-      payment_hash: target.paymentHash,
-      status: 'started',
-      next_lock: nextLock
-    })
-    if (fresh.payout_status !== 'paying') recordSettlement(fresh, [...earlier, attempt])
-
-    // The one call this attempt makes. If LNbits stops this invocation while
-    // it runs, the payment still completes or fails on its own, nothing below
-    // happens, and the row above stays `started`: a payment may exist.
-    const outcome = payoutOutcome(wallet.payInvoice({
-      walletId: match.wallet_id,
-      paymentRequest: target.bolt11,
-      maxSat: due.amount,
-      description: 'LN Pool payout ' + match.id,
-      extra: {lnpool_match: match.id, lnpool_kind: 'payout'}
-    }))
-    storage.set(PAYOUTS, {...attempt, status: outcome.status, detail: outcome.detail})
-    const settled = recordSettlement(storage.get(MATCHES, match.id) || fresh, payoutAttempts(match.id))
-    poke(settled)
-    return {match: matchView(settled, players, seats, me)}
+    const settlement = settlementOf(payouts)
+    if (settlement.state === 'paid') return {match: matchView(recordSettlement(match, payouts), players, seats, me)}
+    const answer = settlement.state === 'bound'
+      ? payBoundInvoice(match, settlement, due)
+      : bindInvoice(match, rows, settlement, due, seats, request.destination)
+    return {...answer, match: matchView(answer.match, players, seats, me)}
   })
+}
+
+// A claim is up to three calls from the page, each short enough to finish
+// inside LNbits' time limit and safe to lose:
+//   1. resolve a Lightning address to an invoice (records nothing);
+//   2. record that invoice as the one this match pays (takes the lock);
+//   3. pay the recorded invoice (see payBoundInvoice).
+// This is steps 1 and 2. Recording is the only step that must not happen
+// twice, so it is the only one behind the settlement lock, and it does
+// nothing slow: no web request, no invoice asked of the funding source.
+function bindInvoice(match, rows, settlement, due, seats, destination) {
+  const text = cleanText(destination, 2048).replace(/^lightning:/i, '')
+  if (!text) throw new Error('Enter a Lightning address, or an invoice for exactly ' + due.amount + ' sats.')
+  if (isLightningAddress(text)) {
+    return {match, resolved: checkedInvoice(resolveAddress(match, due, text), due).bolt11}
+  }
+  const invoice = checkedInvoice(text.toLowerCase(), due)
+
+  const payouts = rows.filter(isPayoutRow)
+  const first = !payouts.length
+  // The lock for this binding and the one a later binding would need. A new
+  // match carries the first in its own row; the second was left by the paid
+  // event that seated the second player.
+  const chain = first ? String(match.lock_bolt11).split(' ') : nextLocks(payouts)
+  const lock = chain[0] || ''
+  let spare = chain[1] || ''
+  if (first && !spare && seats[2]) {
+    const left = rows.find(row => row.id === match.id + '-lock-' + seats[2].id)
+    if (left) spare = left.next_lock
+  }
+  if (elapsedMs() > BIND_BUDGET_MS) throw new Error('LNbits is busy. Nothing was sent: claim again in a moment.')
+  if (!takeSettlementLock(match, lock)) {
+    // Another claim is recording its invoice.
+    return {match: storage.get(MATCHES, match.id) || match, settling: true}
+  }
+
+  // From here on this is the only invocation that will ever record this
+  // binding. Look again: nothing may have changed, except that an older
+  // invoice turned out paid.
+  const fresh = storage.get(MATCHES, match.id)
+  const current = payoutRows(match.id).filter(isPayoutRow)
+  const now = settlementOf(current)
+  if (now.state === 'paid') return {match: recordSettlement(fresh || match, current)}
+  const stillDue = fresh ? entitlement(fresh) : null
+  const sameBinding = (now.binding ? now.binding.id : '') === (settlement.binding ? settlement.binding.id : '')
+  if (!stillDue || stillDue.seat !== due.seat || stillDue.amount !== due.amount || fresh.payout_status === 'manual' || now.state !== settlement.state || !sameBinding) {
+    storage.set(MATCHES, {
+      ...(fresh || match),
+      payout_status: 'manual',
+      note: 'The match changed while it was being settled. Settle it by hand.',
+      updated_at: timeNow()
+    })
+    throw new Error('The match changed while it was being settled. The hall operator has to settle it.')
+  }
+  const n = current.reduce((highest, row) => Math.max(highest, row.n), 0) + 1
+  const createdAt = timeNow()
+  let bound = storage.set(PAYOUTS, {
+    id: match.id + '-' + n,
+    match_id: match.id,
+    n,
+    seat: due.seat,
+    amount: due.amount,
+    bolt11: invoice.bolt11,
+    payment_hash: invoice.paymentHash,
+    status: 'bound',
+    detail: '',
+    next_lock: spare,
+    created_at: createdAt,
+    updated_at: createdAt
+  })
+  const waiting = recordSettlement(fresh, [...current, bound])
+  poke(waiting)
+  if (!spare && elapsedMs() < BIND_BUDGET_MS) {
+    // No lock was left for a later binding. Make one now that this binding is
+    // safely recorded; if this call is cut off here, nothing is lost but that.
+    try {
+      bound = storage.set(PAYOUTS, {...bound, next_lock: settlementLockInvoice(match.id)})
+    } catch (_error) {
+      // A payment LNbits later declares dead will then need the operator.
+    }
+  }
+  // `bound` tells the page to claim again straight away: that call pays.
+  return {match: waiting, settling: true, bound: true}
+}
+
+// Step 3 of a claim, and every later look at a payment that did not report:
+// one call to LNbits to pay the recorded invoice.
+//
+// It takes no lock and can be made by any number of invocations at once,
+// because they can only ever pay this one invoice and LNbits pays an invoice
+// at most once: a second call is answered "already paid" or "still pending"
+// from the payment LNbits holds, and sends nothing. The same call is therefore
+// the way to find out how a payment ended when the invocation that made it was
+// cut off before it could say.
+//
+// Each call records itself first (`started`) and its answer afterwards, in a
+// row of its own. A call cut off in between leaves `started`: a payment may
+// exist. The invoice stays the only one this match pays until it is paid or
+// LNbits holds a failed payment of it that it will not send again (`dead`).
+function payBoundInvoice(match, settlement, due) {
+  const {binding, calls} = settlement
+  if (binding.seat !== due.seat || binding.amount !== due.amount) {
+    throw new Error('The match changed after its payout was recorded. The hall operator has to settle it.')
+  }
+  const now = timeNow()
+  // Somebody is paying right now, or LNbits was asked a moment ago.
+  if (calls.some(call => call.status === 'started' && now - call.created_at < SETTLING_SECONDS)) return {match, settling: true}
+  const last = calls[calls.length - 1]
+  if (last && last.status === 'pending' && now - last.created_at < RECHECK_SECONDS) return {match}
+  if (calls.length >= MAX_PAYOUT_CALLS) {
+    throw new Error('This payout has been tried too many times. The hall operator has to settle it.')
+  }
+
+  const call = storage.set(PAYOUTS, {
+    id: match.id + '-' + binding.n + '-' + system.id('pay'),
+    match_id: match.id,
+    n: binding.n,
+    seat: binding.seat,
+    amount: binding.amount,
+    bolt11: binding.bolt11,
+    payment_hash: binding.payment_hash,
+    status: 'started',
+    detail: '',
+    next_lock: '',
+    created_at: now,
+    updated_at: now
+  })
+  // If LNbits stops this invocation while the call runs, the payment still
+  // completes or fails on its own and nothing below happens.
+  const outcome = payoutOutcome(wallet.payInvoice({
+    walletId: match.wallet_id,
+    paymentRequest: binding.bolt11,
+    maxSat: binding.amount,
+    description: 'LN Pool payout ' + match.id,
+    extra: {lnpool_match: match.id, lnpool_kind: 'payout'}
+  }))
+  storage.set(PAYOUTS, {...call, status: outcome.status, detail: outcome.detail})
+  const settled = recordSettlement(storage.get(MATCHES, match.id) || match, payoutRows(match.id).filter(isPayoutRow))
+  poke(settled)
+  return {match: settled}
 }
 
 // ── Payment event ───────────────────────────────────────────────────────────
@@ -532,6 +568,11 @@ export function recordLnpoolPayment(eventJson) {
     // match. An unseated buy-in never touches the match row.
     const after = seat ? loadMatch(match.id).match : match
     poke(after)
+    // The match has started and nothing waits on this call, so this is the
+    // moment to make the lock a second payout destination would need, should
+    // LNbits ever declare the first one dead. Asking the funding source for an
+    // invoice is too slow to do while a player waits for a prize.
+    if (seat === 2) leaveSpareLock(match.id, paymentHash)
     return {recorded: true, seat, status: player.status, matchStatus: after.status}
   })
 }
@@ -558,11 +599,11 @@ function entitlement(match) {
 // Extension storage cannot express "insert if absent", so it cannot say which
 // of two simultaneous claims came first. The payments table can: LNbits pays a
 // given invoice at most once per wallet (the duplicate check runs under the
-// wallet's payment lock). Each payout attempt therefore has a 1 sat invoice on
-// the hall's own wallet, and paying it is the right to make that attempt. The
-// first one is created with the match; each attempt creates the next. When the
-// framework grows an atomic storage write or an idempotency key for payments,
-// this function is the only thing that needs to change.
+// wallet's payment lock). Recording a payout invoice therefore needs a 1 sat
+// invoice on the hall's own wallet, and paying it is the right to record. The
+// first one is created with the match. When the framework grows an atomic
+// storage write or an idempotency key for payments, this function is the only
+// thing that needs to change.
 function takeSettlementLock(match, lockBolt11) {
   if (!lockBolt11) throw new Error('This match has no settlement lock. The hall operator has to settle it.')
   const lock = wallet.payInvoice({
@@ -589,8 +630,43 @@ function settlementLockInvoice(matchId) {
   }).paymentRequest
 }
 
-function payoutAttempts(matchId) {
-  return storage.find(PAYOUTS, {filters: {match_id: matchId}, sortBy: 'n', limit: MAX_PAYOUT_ATTEMPTS + 1}).rows
+function payoutRows(matchId) {
+  const rows = storage.find(PAYOUTS, {filters: {match_id: matchId}, sortBy: 'n', limit: MAX_PAYOUT_CALLS + 40}).rows
+  return rows.sort((a, b) => a.n - b.n || a.created_at - b.created_at || (a.id < b.id ? -1 : 1))
+}
+
+// A spare lock left by the paid event is kept in the same table.
+function isPayoutRow(row) {
+  return row.status !== 'lock'
+}
+
+function leaveSpareLock(matchId, paymentHash) {
+  try {
+    const now = timeNow()
+    storage.set(PAYOUTS, {
+      id: matchId + '-lock-' + paymentHash,
+      match_id: matchId,
+      n: 0,
+      seat: 0,
+      amount: 0,
+      bolt11: '',
+      payment_hash: '',
+      status: 'lock',
+      detail: '',
+      next_lock: settlementLockInvoice(matchId),
+      created_at: now,
+      updated_at: now
+    })
+  } catch (_error) {
+    // The match is no worse off: a second destination will need the operator.
+  }
+}
+
+// The lock a new binding has to take, and after it any spare: kept in the
+// last row that names one.
+function nextLocks(payouts) {
+  const holder = [...payouts].reverse().find(row => row.next_lock)
+  return holder ? holder.next_lock.split(' ') : []
 }
 
 // Errors LNbits raises before it creates a payment or talks to the node:
@@ -606,8 +682,8 @@ const NOTHING_SENT = [
   /^(missing background payment grant|missing wallet background grant|background grant disabled|payment exceeds max amount|external destination not allowed)$/
 ]
 
-// What one call to pay a payout invoice proved. (A `bound` attempt made no
-// such call; a `started` one has not said what its call proved.)
+// What one call to pay a payout invoice proved. (A `bound` row made no such
+// call; a `started` one has not said what its call proved.)
 //   paid     the invoice is paid
 //   pending  LNbits has a payment of it in flight
 //   refused  this call sent nothing (it says nothing about other calls)
@@ -627,100 +703,120 @@ function payoutOutcome(response) {
   return {status, detail}
 }
 
-// What the recorded attempts prove about a match's payout.
-//   unclaimed  nothing was ever tried
-//   paid       an attempt paid
-//   held       a payment of the bound invoice exists, or may still be made
-//              by an attempt that has not reported: only that invoice can be
-//              paid
-//   released   no payment of any invoice this match was bound to exists or
-//              can still be made: a new invoice may be bound
-// An invoice is clear only if every attempt on it sent nothing (`bound`,
-// `refused`), or LNbits has sealed it (`dead`). One attempt that started and
-// never reported, for instance because LNbits stopped the call during the
-// payment, keeps it held for good: that is the price of never paying two
-// invoices.
-function settlementOf(attempts) {
-  const last = attempts[attempts.length - 1] || null
-  const paid = attempts.find(attempt => attempt.status === 'paid')
-  if (paid) return {state: 'paid', last: paid}
-  const open = new Map()
-  for (const attempt of attempts) {
-    if (attempt.status === 'refused' || attempt.status === 'bound') {
-      if (!open.has(attempt.bolt11)) open.set(attempt.bolt11, false)
-    } else {
-      open.set(attempt.bolt11, attempt.status !== 'dead')
-    }
-  }
-  if (!last) return {state: 'unclaimed', last}
-  if (![...open.values()].some(Boolean)) return {state: 'released', last}
-  // An attempt that sent nothing adds nothing to what is known about the
-  // bound invoice.
-  return {state: 'held', last, known: [...attempts].reverse().find(attempt => attempt.status !== 'refused' && attempt.status !== 'bound')}
+// What the recorded rows say about a match's payout.
+//   unclaimed  no invoice was ever recorded
+//   paid       LNbits reported the invoice paid
+//   bound      an invoice is recorded and not known to be paid. It is the
+//              only thing this match pays, whatever a claim names.
+//   released   LNbits holds a failed payment of the recorded invoice and
+//              will not send it again: another invoice may be recorded
+// Nothing else releases an invoice. In particular a call that LNbits refused
+// before sending says nothing about any other call, and a call that never
+// reported, for instance because LNbits stopped it during the payment, may
+// have paid.
+function settlementOf(payouts) {
+  const bindings = payouts.filter(row => row.status === 'bound')
+  // Rows written before bindings were recorded start with a payment attempt.
+  const binding = bindings.length ? bindings[bindings.length - 1] : payouts[0] || null
+  if (!binding) return {state: 'unclaimed', binding: null, calls: []}
+  // In the order they were made, whichever version wrote them.
+  const calls = payouts
+    .filter(row => row.status !== 'bound' && row.bolt11 === binding.bolt11)
+    .sort((a, b) => a.created_at - b.created_at || a.n - b.n || (a.id < b.id ? -1 : 1))
+  if (payouts.some(row => row.status === 'paid')) return {state: 'paid', binding, calls}
+  if (calls.some(row => row.status === 'dead')) return {state: 'released', binding, calls}
+  return {state: 'bound', binding, calls}
 }
 
 // The match row carries a copy of the settlement for the pages and lists. It
-// is for display only; claims are decided on the attempt rows.
-//   paying       an invoice is bound and about to be paid, or being paid
-//   pending      LNbits has the payment in flight
-//   paid
-//   refused      nothing was sent; the claim can be made again, to any wallet
-//   failed       the node reported failure; the next claim asks LNbits to
-//                confirm that before another wallet is accepted
-//   unconfirmed  a payment may have been made and nothing since has been
-//                able to tell
-// A refused check adds nothing to what is known about a bound invoice, so it
-// never turns `pending` or `unconfirmed` into something else.
-function recordSettlement(match, attempts) {
-  const {last} = settlementOf(attempts)
+// is for display only; claims are decided on the payout rows.
+function recordSettlement(match, payouts) {
+  const {binding} = settlementOf(payouts)
   return storage.set(MATCHES, {
     ...match,
-    payout_seat: last ? last.seat : 0,
-    payout_amount: last ? last.amount : 0,
-    payout_hash: last ? last.payment_hash : '',
-    payout_status: settlementShown(attempts).status,
+    payout_seat: binding ? binding.seat : 0,
+    payout_amount: binding ? binding.amount : 0,
+    payout_hash: binding ? binding.payment_hash : '',
+    payout_status: settlementShown(payouts).status,
     updated_at: timeNow()
   })
 }
 
 // The settlement as the pages show it, with LNbits' own words for why.
-function settlementShown(attempts) {
-  const {state, last, known} = settlementOf(attempts)
+//   paying       an invoice is recorded and being paid
+//   pending      LNbits has the payment in flight
+//   paid
+//   unsent       every call so far was refused before sending; the next
+//                claim tries the same invoice again
+//   failed       the node reported failure; the next claim asks LNbits to
+//                confirm that
+//   unconfirmed  a payment may have been made and nothing since has been
+//                able to tell
+//   released     the payment failed for good; another invoice may be given
+// A refused call adds nothing to what is known about an invoice, so it never
+// turns `pending`, `failed` or `unconfirmed` into `unsent`.
+function settlementShown(payouts) {
+  const {state, calls} = settlementOf(payouts)
   if (state === 'unclaimed') return {status: '', detail: ''}
   if (state === 'paid') return {status: 'paid', detail: ''}
-  if (state === 'released') return last.status === 'bound' ? {status: 'paying', detail: ''} : {status: 'refused', detail: last.detail}
+  if (state === 'released') return {status: 'released', detail: calls.find(call => call.status === 'dead').detail}
+  if (!calls.length) return {status: 'paying', detail: ''}
+  const last = calls[calls.length - 1]
+  const known = [...calls].reverse().find(call => call.status !== 'refused')
+  if (!known) return {status: 'unsent', detail: last.detail}
   if (known.status === 'started' && known === last) return {status: 'paying', detail: ''}
   const check = last.status === 'refused' ? ' Last check: ' + last.detail : ''
   if (known.status === 'pending') return {status: 'pending', detail: check.trim()}
   if (known.status === 'failed') return {status: 'failed', detail: known.detail + check}
-  return {status: 'unconfirmed', detail: (known.detail || 'The payment was started and its result was never recorded.') + check}
+  return {status: 'unconfirmed', detail: (known.detail || NEVER_RECORDED) + check}
 }
 
-// Why a payout is not through, for the few states where there is a reason to
-// give. Read from the attempt rows, so the match note is left alone.
-function settlementDetail(match) {
-  if (!['refused', 'failed', 'unconfirmed'].includes(match.payout_status)) return ''
+const NEVER_RECORDED = 'The payment was started and its result was never recorded.'
+
+// What the pages are told. The copy in the match row cannot age by itself: a
+// payment whose invocation was cut off stays `paying` there for ever. Shown
+// to a player, that must not read as "sending" for longer than a payment can
+// take.
+function shownStatus(match) {
+  // `refused` is what earlier versions called a payment that was not sent.
+  const status = match.payout_status === 'refused' ? 'unsent' : match.payout_status
+  const age = timeNow() - match.updated_at
+  if (status === 'paying' && age > SETTLING_SECONDS) return 'unconfirmed'
+  if (status === 'pending' && age > PENDING_SHOWN_SECONDS) return 'unconfirmed'
+  return status
+}
+
+// Why a payout is not through, for the states where there is a reason to
+// give. Read from the payout rows, so the match note is left alone.
+function settlementDetail(match, status) {
+  if (!['unsent', 'failed', 'unconfirmed', 'released'].includes(status)) return ''
   if (match.payout_bolt11) return match.note.replace(/^Payout failed: /, '')
-  return settlementShown(payoutAttempts(match.id)).detail
+  const payouts = payoutRows(match.id).filter(isPayoutRow)
+  if (!settlementOf(payouts).calls.length) return 'The invoice was recorded and no payment has been made yet.'
+  return settlementShown(payouts).detail || NEVER_RECORDED
 }
 
-// Turn what the player typed into the one invoice this match will pay.
-function payoutInvoice(match, due, destination) {
-  const text = cleanText(destination, 2048).replace(/^lightning:/i, '')
-  if (!text) throw new Error('Enter a Lightning address, or an invoice for exactly ' + due.amount + ' sats.')
-  let bolt11 = text.toLowerCase()
-  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text) || /^lnurl1/i.test(text)) {
-    const fetched = wallet.fetchLnurlInvoice({
-      walletId: match.wallet_id,
-      lnurl: text,
-      amount: due.amount,
-      description: 'LN Pool payout ' + match.id
-    })
-    if (fetched.ok !== true || !fetched.paymentRequest) {
-      throw new Error('Could not get an invoice from that address: ' + (fetched.error || 'nothing was returned') + '.')
-    }
-    bolt11 = String(fetched.paymentRequest).toLowerCase()
+function isLightningAddress(text) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text) || /^lnurl1/i.test(text)
+}
+
+// Ask a Lightning address for an invoice of the amount owed.
+function resolveAddress(match, due, address) {
+  const fetched = wallet.fetchLnurlInvoice({
+    walletId: match.wallet_id,
+    lnurl: address,
+    amount: due.amount,
+    description: 'LN Pool payout ' + match.id
+  })
+  if (fetched.ok !== true || !fetched.paymentRequest) {
+    throw new Error('Could not get an invoice from that address: ' + (fetched.error || 'nothing was returned') + '.')
   }
+  return String(fetched.paymentRequest).toLowerCase()
+}
+
+// An invoice this match may be bound to: valid, for exactly the amount owed,
+// and not about to expire.
+function checkedInvoice(bolt11, due) {
   if (lightning.validateInvoice(bolt11).valid !== true) throw new Error('That is not a Lightning address or a valid invoice.')
   const decoded = lightning.decodeInvoice(bolt11)
   if (decoded.amountMsat !== due.amount * 1000) throw new Error('The invoice must be for exactly ' + due.amount + ' sats.')
@@ -885,7 +981,8 @@ function hallView(hall) {
 // lock, or a payment hash.
 function matchView(match, players, seats, me) {
   const due = entitlement(match)
-  const detail = settlementDetail(match)
+  const status = shownStatus(match)
+  const detail = settlementDetail(match, status)
   return {
     id: match.id,
     hallId: match.hall_id,
@@ -904,7 +1001,7 @@ function matchView(match, players, seats, me) {
       seat: due ? due.seat : match.payout_seat,
       amount: due ? due.amount : match.payout_amount,
       reason: due ? due.reason : '',
-      status: match.payout_status,
+      status,
       ...(detail ? {detail} : {})
     },
     you: me ? {seat: me.seat, status: playerStatus(me.row, me.seat), name: me.row.name, resultSeq: me.row.result_seq} : null,
@@ -928,7 +1025,7 @@ function adminMatchView(match) {
     winner: match.winner,
     payoutSeat: match.payout_seat,
     payoutAmount: match.payout_amount,
-    payoutStatus: match.payout_status,
+    payoutStatus: shownStatus(match),
     payoutHash: match.payout_hash,
     note: match.note,
     createdAt: match.created_at,

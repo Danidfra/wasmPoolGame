@@ -76,8 +76,9 @@ create match ─▶ buy-in invoice for seat 1, plus a 1 sat settlement lock
 join         ─▶ buy-in invoice for seat 2
 paid events  ─▶ seats taken; when both are, status = active
 agreed winner or concession ─▶ status = finished
-claim        ─▶ lock taken ─▶ invoice recorded
-claim again  ─▶ lock taken ─▶ payment started ─▶ payout invoice paid
+claim        ─▶ (a Lightning address is resolved to an invoice)
+claim again  ─▶ lock taken ─▶ invoice recorded
+claim again  ─▶ recorded invoice paid
 ```
 
 States: `open → active → finished`, plus `open → cancelled` (the first player
@@ -103,9 +104,9 @@ lock (`lnbits/core/services/payments.py`), and core tests it
 (`test_pay_twice`, `test_pay_twice_fast_same_invoice`).
 
 LN Pool turns that into a mutex. Each match gets a 1 sat invoice on the hall's
-own wallet when it is created. To pay a match out, a claim must first pay
-that invoice from the same wallet. Exactly one invocation succeeds. The
-self-payment moves no money.
+own wallet when it is created. To record the invoice a match pays out to, a
+claim must first pay that 1 sat invoice from the same wallet. Exactly one
+invocation succeeds. The self-payment moves no money.
 
 Everything lives in `takeSettlementLock` in `dev/src/index.js`. It is a
 stand-in for a missing primitive and is meant to be replaced.
@@ -114,177 +115,191 @@ Verified against unmodified LNbits core 1.6.2-rc1 with the fake funding
 source: four simultaneous claims carrying four different invoices produced
 one payout; the other three were told the match was settling.
 
-### Payout attempts
+### One recorded invoice
 
-Settlement is a chain of **attempts**, recorded in `lnpool_payouts`. Each is
-made by the one invocation that holds the attempt's lock. The first lock is
-created with the match; every attempt leaves the lock for the next one in its
-row before it does anything that can be cut off.
+Settlement has one step that must not happen twice, and many that may:
 
-A payout takes two attempts, in two calls from the page:
+- **Recording** the invoice the match pays is exclusive. The claim that takes
+  the lock writes a `bound` row in `lnpool_payouts` with the invoice.
+- **Paying** it is not. Any claim, any number of times, from any number of
+  invocations at once, may call LNbits to pay the recorded invoice. They can
+  only ever pay that one invoice, and LNbits pays an invoice at most once: a
+  second call is answered "already paid" or "still pending" from the payment
+  LNbits already holds, and sends nothing. That same call is how the backend
+  learns how a payment ended, because the host API has no call to look a
+  payment up.
 
-- **Binding.** Resolve the Lightning address, check the invoice, create the
-  locks for the two attempts that follow, take the lock, write the row with
-  status `bound`. Nothing is paid.
-- **Paying.** Take the lock, write a row with the bound invoice and status
-  `started`, call LNbits once, write what that call proved.
+Each paying call writes a row of its own before it calls (`started`) and its
+answer afterwards:
 
-Nothing else ever pays a payout invoice, so the rows are a complete list of
-the calls that could have moved the pot. Only the holder of lock *n* writes
-row *n*, which is what makes the rows trustworthy on last-writer-wins storage.
-
-What one call can prove:
-
-| Outcome | Meaning | LNbits said |
+| Row | Meaning | LNbits said |
 |---|---|---|
+| `bound` | the invoice this match pays; the row made no call | |
+| `started` | a call was made and never reported: cut off, or still running | |
 | `paid` | the invoice is paid | success, or "already paid" |
 | `pending` | a payment of it is in flight | pending, or "still pending" |
 | `refused` | this call sent nothing | an error core raises before it creates a payment: balance, routing-fee reserve, amount limit, wallet limits, background-payment grant |
 | `failed` | the node tried and reported failure | "Payment failed: ..." |
 | `dead` | LNbits holds a failed payment of this invoice and will never send it again | "Payment is failed node, retrying is not possible." |
 | `unknown` | anything else, including an error text this code does not know | |
-| `started` | the attempt never reported: cut off, or still running | |
-| `bound` | this attempt only recorded the invoice; it made no call | |
 
-What the rows prove about the match:
+What the rows say about the match:
 
-- **paid**: some attempt paid. Final.
-- **held**: a payment of the bound invoice exists, or may still be made by an
-  attempt that has not reported. The match pays that invoice and no other,
-  whatever destination a later claim names. A later claim is a new attempt on
-  the same invoice, which is how the backend finds out how a payment ended:
-  the host API has no call to look a payment up.
-- **released**: for every invoice the match was ever bound to, either every
-  attempt on it sent nothing (`bound`, `refused`), or LNbits has sealed it
-  (`dead`). No payment of
-  it exists and none can be made, because nobody pays outside an attempt. The
-  next attempt may bind a new invoice, to the same wallet or another.
+- **paid**: some call reported the invoice paid. Final.
+- **bound**: an invoice is recorded and not known to be paid. It is the only
+  thing the match pays, whatever destination a claim names.
+- **released**: a `dead` row exists for the recorded invoice. Another invoice
+  may be recorded, behind the next lock.
 
-The rule is deliberately one-sided. One attempt that started and never
-reported keeps its invoice bound for good, even if every later call is
-refused: LNbits checks the balance before it looks for an earlier payment, so
-a refusal says nothing about what another call did. An error text that is not
-on the list keeps it bound too. Those matches end with the operator. A second
-destination while the first payment might exist is never accepted.
-
-A freshly bound invoice is released in this sense, since nothing has been
-sent, but the next attempt always pays it rather than binding another.
+Nothing else releases an invoice. A `refused` call says only that this call
+sent nothing; LNbits checks the balance before it looks for an earlier
+payment, so it can refuse a call although a payment exists. A `started` row
+without an answer may have paid. So after "the hall wallet is short" the
+winner tries the same invoice again once the wallet is topped up, and cannot
+switch to another wallet until LNbits itself has given up on the first one.
 
 `dead` rests on the funding source: the node reported the payment failed when
 it was sent and again when LNbits asked later, and LNbits refuses to send an
-invoice it already has a payment for. That is the same evidence LNbits itself
-uses to give the money back to a wallet.
+invoice it already has a payment for, which also stops any call for that
+invoice that is still on its way. That is the same evidence LNbits uses to
+give the money back to a wallet.
 
-### The time limit, and payments that outlive the call
+The lock a second recording needs is made ahead of time, by the paid event
+that seats the second player: at that moment the match has just started and
+nobody is waiting on the call. A recording that finds none (a refund, or a
+match from an earlier version) makes one after its own row is safely written.
+
+### What the pages are told
+
+The match row keeps a copy of the outcome (`payout_status`) for pages and
+lists. It is never used to decide a payout.
+
+| Shown | Meaning | Offered to the player |
+|---|---|---|
+| `paying` | an invoice is recorded and being paid | nothing; the page asks again by itself |
+| `pending` | LNbits has the payment in flight | the same |
+| `paid` | | |
+| `unsent` | every call so far was refused before sending | "Try again" (same invoice) |
+| `failed` | the node reported failure | "Try the payment again"; that call asks LNbits to confirm it |
+| `unconfirmed` | a payment may have been made and nothing since has been able to tell | "Check the payment again" |
+| `released` | the payment failed for good | the claim form, for another invoice or address |
+| `manual` | the operator has to settle | |
+
+A refused check adds nothing to what is known, so it never turns `pending`,
+`failed` or `unconfirmed` into `unsent`.
+
+The copy cannot age by itself: when the invocation that was paying is cut
+off, the row would say `paying` for ever. So the view turns `paying` into
+`unconfirmed` after 15 seconds without a new answer, and `pending` after two
+minutes. The page applies the same rule on its own clock (20 seconds, 150
+seconds), so a page that gets no answers at all still leaves "Sending".
+
+### The time limit, and what LNbits does with slow calls
 
 LNbits stops an extension call after `wasm_runtime_max_execution_ms` (5 s by
 default). The clock runs during host calls too. When it runs out LNbits
 interrupts the guest, which shows in the log as `wasm trap: interrupt`; it
-does not cancel a host call that is under way. LNbits also waits up to 5 s
-for the node to pay an invoice (`lnbits_funding_source_pay_invoice_wait_seconds`).
+does not cancel a host call that is under way, so a payment in progress
+still completes or fails on its own. LNbits also waits up to 5 s for the node
+to pay an invoice.
 
-So a real Lightning payment made inside a call can use up the call's time.
-The payment still completes or fails on its own; the guest is stopped the
-moment the host call returns, before it can write the result. That is why
-binding and paying are separate calls: the paying call does nothing slow
-before the payment (no address to resolve, no invoice to ask the node for, a
-few storage reads and one write), so the payment has almost the whole limit.
-A call that has already used more than a second before taking its lock does
-not start a payment at all, and a binding that has used more than 3.5 s
-gives up before its lock, so that it cannot be cut off between taking the
-lock and writing its row.
+Two more things were measured on a real instance whose funding source is
+another LNbits:
 
-A payment slower than the limit is still cut off. Then:
+- every invoice created and every payment made is a web request to that
+  other instance: about a second for an invoice, 4.8 s or more for a payout;
+- LNbits lets one thing at a time use its main database, and keeps it during
+  some of those requests. While one is under way, calls that normally take
+  milliseconds wait: a plain read of a match took 7 s.
 
-- the row says `started` and stays that way; the match is **held**;
-- the page asks again after 20 s; that attempt calls LNbits for the same
-  invoice, and LNbits answers from the payment it already has ("already
-  paid", "still pending") without sending anything;
-- LNbits only gets that far if the wallet holds the amount plus the reserve,
-  because it checks the balance first. From a wallet the payout emptied the
-  check is refused, the match shows `unconfirmed`, and it stays bound. It
-  turns to `paid` on the first check made while the wallet holds enough, or
-  the operator confirms it in the wallet's payment list and closes the match.
+So any call can be cut off at any point, and a payout usually is. The design
+follows from that:
+
+- **A claim is up to three calls**, each of which does one slow thing at
+  most: resolve a Lightning address (two web requests, nothing recorded);
+  record the invoice (the lock, three storage calls, nothing asked of the
+  funding source); pay (a few storage calls, then the payment).
+- **Nothing slow sits between taking the lock and writing its row.** A call
+  that has already used 2.5 s does not take the lock. A lock spent with no
+  row written ends automatic settlement for that match; the window is two
+  storage reads wide.
+- **A payment that outlives its call leaves `started`.** The next claim asks
+  LNbits about the same invoice: one call, no lock, no invoice to create.
+  Asked again while the first call may still be running (within 15 s), the
+  backend answers "settling" without calling LNbits at all.
+- **LNbits only answers "already paid" when the wallet holds the amount plus
+  the reserve**, because it checks the balance first. From a wallet the payout
+  emptied the check is refused; the match shows `unconfirmed` and stays bound
+  until a check is made with enough in the wallet, or the operator confirms
+  the payment in the wallet's list and closes the match.
+- **The page makes one claim at a time**, gives a request 15 s, asks again by
+  itself four times over about 80 s, then leaves a button. An earlier version
+  started a new claim from every answer and reached hundreds of requests for
+  one payout.
 
 A timeout never frees an invoice. Verified on LNbits core with a node made
-to take longer than the limit: the invoice was paid, the call was stopped,
-no other destination was accepted, and the next check with funds in the
-wallet recorded it as paid without a second payment.
+slower than the limit: the invoice was paid, the call was stopped, no other
+destination was accepted, and four simultaneous checks made with funds in
+the wallet all reported "paid" without anything being sent.
 
-An operator who expects slow routes can raise this extension's execution
-limit in LNbits (runtime limits, for example to 15 000 ms). Nothing above
-depends on it.
-
-The match row keeps a copy of the outcome (`payout_status`) for pages and
-lists: `paying`, `pending`, `paid`, `refused` (released: claim again, any
-wallet), `failed` (the node failed it; the next claim asks LNbits to confirm),
-`unconfirmed` (a payment may exist and nothing can tell), `manual`. The copy
-is never used to decide a payout.
-
-A match bound by a version before attempts existed has its invoice in the
-match row and no rows. It keeps the old rule: only that invoice, retried as
-often as asked.
+An operator can raise this extension's execution limit in LNbits (runtime
+limits, for example to 15 000 ms) so that more payouts report in the call
+that made them. Nothing above depends on it.
 
 ### Routing fees
 
 The prize is what the match advertised: the pot less the hall fee. It is paid
 in full or not at all; an invoice for any other amount is refused.
 
-Routing fees are the hall's cost, paid from the hall wallet on top of the
-prize. LNbits will only send a payment when the wallet holds the amount plus
-a reserve for them (`lnbits_reserve_fee_min` and `lnbits_reserve_fee_percent`:
-2 sats, or 1% if that is more, by default). A payment to a wallet on the same
-LNbits needs no reserve.
+The hall fee is the hall's share of the pot. Routing fees are a separate
+network cost, paid from the hall wallet on top of the prize. LNbits will only
+send a payment when the wallet holds the amount plus a reserve for them
+(`lnbits_reserve_fee_min` and `lnbits_reserve_fee_percent`: 2 sats, or 1% if
+that is more, by default). A payment to a wallet on the same LNbits needs no
+reserve.
 
-So the hall wallet has to hold more than the pots. Either it keeps a float, or
-the hall fee leaves the reserve in the wallet (a fee of 1% or more does once
-it comes to 2 sats). When it holds too little, LNbits refuses before anything
-is sent, the attempt is `refused`, the match stays claimable, the player is
-told the hall wallet needs funds, and the owner page flags the match. After a
-top-up the player claims again.
+So the hall wallet has to hold more than the pots, and keeping it so is the
+operator's job. A hall fee helps but guarantees nothing: 10% of a 10 sat pot
+is 1 sat, less than the reserve. With no fee the whole pot goes to the
+winner and the wallet needs spare sats for every payout.
+
+When the wallet holds too little, LNbits refuses before anything is sent.
+The match shows `unsent`, the player is told the hall wallet needs funds,
+the owner page flags the match, and after a top-up the player tries again.
 
 The backend cannot check this beforehand: a claim runs without a user, and the
 host API only shows a wallet balance to its signed-in owner.
 
-The first real-money match ran into exactly this (stakes of 5, a 10% fee, a
-wallet holding the 10 sat pot, a 9 sat prize needing 11). The version of that
-day bound the invoice on any failure, so the match could only be retried with
-the same invoice. `dev/e2e/run_e2e.py` replays it against LNbits core.
-
 ### What the lock costs
 
-- **1 sat invoices on the hall's funding source**: one per match, and two
-  per binding. A normal payout uses two and leaves one unpaid, which
-  expires.
+- **1 sat invoices on the hall's funding source**: one per match, one more
+  when the second player's buy-in arrives. A normal payout pays the first to
+  the wallet itself and leaves the other unpaid; it expires.
 - **It expires.** Core gives extension invoices the instance default expiry
   (`LIGHTNING_INVOICE_EXPIRY`, 3600 s by default) and the host API cannot set
-  another. A match not claimed within that time of being created cannot be
-  settled automatically, and after a payout that did not go through, the next
-  claim has to come within that time of the last one. Otherwise the claim
-  fails with a message and the operator pays by hand.
-- **A call cut off between taking a lock and writing its attempt row** ends
-  automatic settlement for that match: the lock is used and nothing says what
-  comes next. The window is a few host calls wide. It fails closed.
+  another. An invoice has to be recorded within that time of the match being
+  created, or the claim fails with a message and the operator pays by hand.
+  Paying a recorded invoice, and checking on it, need no lock and have no
+  such limit.
+- **A call cut off between taking the lock and writing its row** ends
+  automatic settlement for that match. It fails closed.
 - **It depends on error strings from core**: "already paid" and "still
-  pending" to tell "someone else is settling" from "cannot settle", and the
-  texts in the table above. If core rewords them, payouts fail closed: a
-  refusal is no longer recognised, and the invoice stays bound.
-- **At most 30 attempts per match**, which is 15 payouts tried. After that
-  the operator settles.
+  pending" to tell "someone else is recording" from "cannot record", and the
+  texts in the table above. If core rewords them, payouts fail closed.
+- **At most 40 calls to pay one invoice.** After that the operator settles.
 
 ### Other money rules
 
 - A payout invoice must be for exactly the amount owed. A Lightning address
-  is resolved to an invoice before the lock is taken, once per attempt that
-  binds a new invoice.
-- A payment that is in flight and then completes after the wallet has been
-  emptied cannot be confirmed: LNbits answers "insufficient balance" before
-  it looks at the payment. The match shows `pending` or `unconfirmed` until
-  the wallet again holds enough for LNbits to answer. The owner page lists
-  the attempts; the wallet's own payment list is the authority.
+  is resolved to an invoice in a call of its own; the page sends the invoice
+  back to be recorded.
 - To settle by hand, the operator closes the match first (nobody can claim
   after that) and checks the wallet's payments for an outgoing "LN Pool
   payout" with the match id before paying.
+- Rows written by earlier versions are read by the same rules: the invoice
+  of the last recording (or of the first row, before recordings were kept
+  separately) is the one the match pays. A match whose invoice an earlier
+  version kept in the match row can only retry that invoice.
 - Seat keys are 32 random bytes from the host. The backend keeps only the
   SHA-256, and only the hash goes into invoice metadata. The key is returned
   once to the browser that asked for the invoice, and is never put in a URL
@@ -302,14 +317,14 @@ dearest invocation of each kind:
 | owner list, 100 rows (the largest page the API allows) | 23 |
 | owner list, 20 rows | 12 |
 | lobby, 50 open matches (the most it lists) | 14 |
-| claim a payout, full-size table (the paying call) | 14 (16 at most) |
+| claim a payout, full-size table (the paying call) | 13 (14 at most) |
 | report a result (the one that commits) | 12 |
 | create a match, record a shot, join, paid event | 11 |
 | read a match | 10 |
 
 About 9 million of every call is the JavaScript runtime starting up. What the
-extension itself adds is small: the call that pays a claim makes 15 host
-calls and spends 5 million on top of the start-up cost.
+extension itself adds is small: the call that pays a claim makes 13 host
+calls and spends 4 million on top of the start-up cost.
 
 **The build toolchain decides this, and it is pinned.** The component is built
 with jco 1.19.0, which uses componentize-js 0.20.0. Newer versions generate
@@ -427,6 +442,7 @@ static/pool-engine.js        physics and rules (shared by browsers, bot, tests, 
 static/play.js               player page controller: talks to the backend, runs shots
 static/play-ui.js            player page presentation: everything put on the page
 static/pool-view.js          presentation logic with no DOM: wording, announcements, ball rotation maths
+static/pool-claim.js         the requests that make up one claim, with no DOM: steps, timeout, when to ask again
 static/pool-table.js         canvas renderer: table, lit rolling balls, cue, effects
 static/pool-fx.js            visual-only observers of a shot: rotation, impacts, pocket drops, sound
 static/sponsors.js           sponsor placements (empty by default)

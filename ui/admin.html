@@ -36,7 +36,7 @@
             Lightning routing fees are paid from this wallet on top of the prize. LNbits only sends a payout when the
             wallet holds the prize plus a reserve for those fees: by default 2 sats, or 1% of the payout if that is
             more. Keep that much in the wallet beyond the pots, or set a hall fee that leaves it there. A payout the
-            wallet cannot cover is not sent: the match is flagged below and the player can claim again once you have
+            wallet cannot cover is not sent: the match is flagged below and the player tries again once you have
             added funds.
           </p>
         </div>
@@ -101,6 +101,8 @@
           is one that has not failed, the player has been paid or is being paid. Otherwise pay or refund them
           yourself. "Unconfirmed" means a payment was started and its result never reached LN Pool, usually
           because it took longer than LNbits allows one call: check the wallet's payments before doing anything.
+          LN Pool confirms it by itself when the player checks again while the wallet holds the prize plus the
+          reserve.
         </p>
       </div>
     </main>

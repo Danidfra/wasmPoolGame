@@ -15,6 +15,7 @@
   const bridge = window.createLnbitsBridge('lnpool')
   const E = window.PoolEngine
   const V = window.PoolView
+  const C = window.PoolClaim
   const UI = window.PoolUI
   const fx = new window.PoolFx()
   const origin = new URL(window.location.href).origin
@@ -43,7 +44,8 @@
     prefill: {name: '', stake: ''},
     claimTries: 0,
     claimTimer: 0,
-    claimDestination: '',
+    claiming: false,
+    viewAt: 0,
     concedeArmed: false,
     muted: false
   }
@@ -160,8 +162,11 @@
       bindTable()
       window.setInterval(tick, SYNC_MS)
       // The "syncing" line depends on how long we have waited; keep it current.
+      // So does how long a payout may go on reading "sending".
       window.setInterval(() => {
-        if (game.result && app.view && app.view.status === 'active') render()
+        if (!app.view) return
+        if (game.result && app.view.status === 'active') render()
+        else if (['paying', 'pending'].includes(app.view.settlement.status)) render()
       }, 1000)
       window.addEventListener('resize', layout)
       if (window.ResizeObserver) new ResizeObserver(layout).observe(document.getElementById('table'))
@@ -268,6 +273,7 @@
 
   function applyView(view) {
     app.view = view
+    app.viewAt = Date.now()
     updateGame(view)
     render()
     keepClaiming(view)
@@ -571,6 +577,7 @@
         outdated: game.outdated
       },
       invoice: (app.creds && app.creds.paymentRequest) || '',
+      waited: app.viewAt ? (Date.now() - app.viewAt) / 1000 : 0,
       hasKey: !!app.creds,
       link: origin + '/ext/lnpool/matches/' + encodeURIComponent(view.id),
       concedeArmed: app.concedeArmed
@@ -621,43 +628,49 @@
     }
   }
 
+  // One claim at a time. Every answer from an earlier version of this page
+  // started another claim without stopping the one in hand, and a slow payout
+  // ended in hundreds of requests at once.
   async function claim(destination, byHand) {
-    if (byHand) {
-      app.claimTries = 0
-      app.claimDestination = destination
-    }
+    if (app.claiming) return
+    app.claiming = true
+    window.clearTimeout(app.claimTimer)
+    app.claimTimer = 0
+    if (byHand) app.claimTries = 0
     UI.busy('claim-button', true)
-    try {
-      const data = await bridge.api('POST', matchPath('/claim'), withCreds({destination: app.claimDestination}))
-      UI.busy('claim-button', false)
-      applyView(data.match)
-      // The first call only records the invoice; the next one pays it, with
-      // the whole of LNbits' time limit for the payment.
-      if (data.bound) return claim('', false)
-      // Another request is settling this match right now; look again shortly.
-      if (data.settling) window.setTimeout(() => claim('', false), 2500)
-    } catch (error) {
-      // A failed answer does not mean a failed payout: the request can die
-      // after the payment was made. Look at what the match says before
-      // telling the player anything went wrong.
+    const outcome = await C.run(next => bridge.api('POST', matchPath('/claim'), withCreds({destination: next})), destination)
+    if (outcome.view) applyView(outcome.view)
+    if (outcome.state === 'timeout' || outcome.state === 'error') {
+      // No answer does not mean no payout: LNbits can stop the request after
+      // the payment was made. Look at what the match says before telling the
+      // player that anything went wrong.
       await sync()
-      UI.busy('claim-button', false)
-      const state = app.view ? app.view.settlement.status : ''
-      if (byHand && !['paid', 'paying', 'pending'].includes(state)) UI.toast(friendly(error), 'bad')
+      const state = app.view ? V.payoutStatus(app.view, 0) : ''
+      if (byHand && outcome.state === 'error' && !['paid', 'paying', 'pending', 'unconfirmed'].includes(state)) {
+        UI.toast(friendly(outcome.error), 'bad')
+      }
     }
+    app.claiming = false
+    UI.busy('claim-button', false)
+    render()
+    keepClaiming(app.view, outcome.state === 'settling')
   }
 
-  // While a payout to this player is in flight, ask again every few seconds:
-  // the backend can only learn how the payment ended by retrying it.
-  function keepClaiming(view) {
+  // While a payout to this player is unsettled, ask again a few times, further
+  // and further apart: the backend can only learn how a payment ended by
+  // asking LNbits about it. After that the page stops and shows a button.
+  function keepClaiming(view, settling) {
+    if (!view || app.claiming || app.claimTimer) return
     const you = view.you ? view.you.seat : 0
-    const sending = ['paying', 'pending'].includes(view.settlement.status)
-    if (!you || view.settlement.seat !== you || !sending || app.claimTimer || app.claimTries >= 12) return
+    if (!you || view.settlement.seat !== you) return
+    if (!settling && !['paying', 'pending'].includes(view.settlement.status)) return
+    const delay = C.nextCheck(app.claimTries)
+    if (delay === null) return
     app.claimTries += 1
     app.claimTimer = window.setTimeout(() => {
       app.claimTimer = 0
       claim('', false)
-    }, 4000)
+    }, delay)
   }
 
   async function restoreSeat(key) {

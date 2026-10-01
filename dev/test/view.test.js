@@ -2,10 +2,12 @@ import assert from 'node:assert/strict'
 import {test} from 'node:test'
 import '../../static/pool-engine.js'
 import '../../static/pool-view.js'
+import '../../static/pool-claim.js'
 import '../../static/pool-fx.js'
 
 const E = globalThis.PoolEngine
 const V = globalThis.PoolView
+const C = globalThis.PoolClaim
 const PoolFx = globalThis.PoolFx
 
 // A match view as the backend reports it, and a table to go with it.
@@ -219,8 +221,8 @@ test('the end of a match is announced to each side in its own words', () => {
 })
 
 test('the result screen offers the right thing for every payout state', () => {
-  const view = (status, detail = '') => ({status: 'finished', note: 'Bo conceded.', settlement: {seat: 1, amount: 9, reason: 'prize', status, detail}})
-  const offered = (status, note) => V.payout(view(status, note), true)
+  const view = (status, detail = '') => ({status: 'finished', note: 'Bo conceded.', updatedAt: 1000, serverTime: 1001, settlement: {seat: 1, amount: 9, reason: 'prize', status, detail}})
+  const offered = (status, detail) => V.payout(view(status, detail), true, 0)
 
   assert.deepEqual([offered('').form, offered('').button, offered('').line], ['destination', 'Claim 9 sats', ''])
   assert.equal(offered('paying').form, '')
@@ -228,24 +230,99 @@ test('the result screen offers the right thing for every payout state', () => {
   assert.deepEqual([offered('paid').form, offered('paid').tone], ['', 'paid'])
   assert.equal(offered('manual').form, '')
 
-  // Nothing was sent: the player may name any wallet again, and is told why.
-  const short = offered('refused', 'You must reserve at least (2  sat) to cover potential routing fees.')
-  assert.equal(short.form, 'destination')
-  assert.equal(short.button, 'Claim 9 sats')
-  assert.match(short.line, /Nothing was sent.*hall operator to top up/)
-  assert.match(offered('refused', 'payment exceeds max amount').line, /Nothing was sent \(payment exceeds max amount\)\. Claim again/)
-  assert.match(offered('refused', 'Payment is failed node, retrying is not possible.').line, /will not be tried again/)
+  // Nothing was sent, and the invoice on record is tried again: a button,
+  // no field for another destination, and the reason.
+  const short = offered('unsent', 'You must reserve at least (2  sat) to cover potential routing fees.')
+  assert.deepEqual([short.form, short.button], ['retry', 'Try again'])
+  assert.match(short.line, /Nothing was sent.*hall operator to top up.*then try again/)
+  assert.match(offered('unsent', 'payment exceeds max amount').line, /Nothing was sent \(payment exceeds max amount\)\. Your 9 sats are safe\. Try again/)
+  assert.equal(offered('refused', 'Insufficient balance.').form, 'retry', 'the name an earlier backend used for the same state')
 
   // A payment may exist: only the invoice the backend already has is retried.
   assert.deepEqual([offered('failed', 'Payment failed: no route').form, offered('failed').button], ['retry', 'Try the payment again'])
   assert.match(offered('failed', 'Payment failed: no route').line, /did not go through \(Payment failed: no route\)/)
-  assert.equal(offered('unconfirmed').form, 'retry')
+  assert.deepEqual([offered('unconfirmed').form, offered('unconfirmed').button], ['retry', 'Check the payment again'])
   assert.match(offered('unconfirmed', 'x. Last check: Insufficient balance.').line, /may have arrived/)
 
+  // LNbits will never send that invoice: now, and only now, another one can be named.
+  const released = offered('released', 'Payment is failed node, retrying is not possible.')
+  assert.deepEqual([released.form, released.button], ['destination', 'Claim 9 sats'])
+  assert.match(released.line, /will not be tried again.*new invoice or another wallet/)
+
   // Everyone else only hears how the prize is doing.
-  assert.equal(V.payout(view('refused', 'x'), false).line, '')
-  assert.equal(V.payout(view('paid'), false).line, 'Prize paid out')
-  assert.equal(V.payout({...view('paid'), status: 'cancelled'}, false).line, '')
+  assert.equal(V.payout(view('unsent', 'x'), false, 0).line, '')
+  assert.equal(V.payout(view('paid'), false, 0).line, 'Prize paid out')
+  assert.equal(V.payout({...view('paid'), status: 'cancelled'}, false, 0).line, '')
+})
+
+test('a page that gets no more answers stops saying "sending"', () => {
+  // The last thing the backend said: the payment was started a second ago.
+  const view = {status: 'finished', note: '', updatedAt: 5000, serverTime: 5001, settlement: {seat: 1, amount: 10, reason: 'prize', status: 'paying'}}
+  assert.equal(V.payout(view, true, 0).line, 'Sending 10 sats')
+  assert.equal(V.payout(view, true, 10).line, 'Sending 10 sats')
+  // Twenty seconds on, with nothing new from the backend, the page offers to check.
+  const late = V.payout(view, true, 25)
+  assert.deepEqual([late.form, late.button, late.tone], ['retry', 'Check the payment again', 'bad'])
+  assert.match(late.line, /could not be confirmed/)
+  // The same when the view was already old on arrival.
+  assert.equal(V.payout({...view, serverTime: 5030}, true, 0).form, 'retry')
+  // A payment LNbits reports in flight is given longer, not for ever.
+  const pending = {...view, settlement: {...view.settlement, status: 'pending'}}
+  assert.equal(V.payout(pending, true, 60).line, 'Sending 10 sats')
+  assert.equal(V.payout(pending, true, 200).button, 'Check the payment again')
+  // Whoever is watching is not told it is on its way either.
+  assert.equal(V.payout(view, false, 25).line, '')
+})
+
+// ── The requests that make up a claim ───────────────────────────────────────
+
+test('a claim to a Lightning address is three requests: resolve, record, pay', async () => {
+  const sent = []
+  const answers = [
+    {match: {id: 'm', n: 1}, resolved: 'lnbc-invoice'},
+    {match: {id: 'm', n: 2}, settling: true, bound: true},
+    {match: {id: 'm', n: 3}}
+  ]
+  const outcome = await C.run(destination => {
+    sent.push(destination)
+    return Promise.resolve(answers[sent.length - 1])
+  }, 'ana@wallet.example')
+  assert.deepEqual(sent, ['ana@wallet.example', 'lnbc-invoice', ''])
+  assert.deepEqual(outcome, {view: {id: 'm', n: 3}, state: 'done', error: null})
+})
+
+test('a request that is never answered ends the claim without calling it a failure', async () => {
+  const sent = []
+  const started = Date.now()
+  const outcome = await C.run(destination => {
+    sent.push(destination)
+    // Recording answers; the paying request is the one LNbits cuts off.
+    return sent.length === 1 ? Promise.resolve({match: {id: 'm', settlement: {status: 'paying'}}, settling: true, bound: true}) : new Promise(() => {})
+  }, 'lnbc-invoice', {timeoutMs: 40})
+  assert.equal(outcome.state, 'timeout')
+  assert.ok(Date.now() - started < 1000, 'it does not wait for ever')
+  assert.deepEqual(sent, ['lnbc-invoice', ''], 'and does not send anything again by itself')
+  assert.equal(outcome.view.settlement.status, 'paying', 'the page keeps the last thing it was told, and looks at the match again')
+})
+
+test('a refused request and "someone else is at it" are told apart', async () => {
+  const refused = await C.run(() => Promise.reject(new Error('Enter a Lightning address.')), '')
+  assert.equal(refused.state, 'error')
+  assert.equal(refused.error.message, 'Enter a Lightning address.')
+  const settling = await C.run(() => Promise.resolve({match: {id: 'm'}, settling: true}), 'lnbc-invoice')
+  assert.deepEqual(settling, {view: {id: 'm'}, state: 'settling', error: null})
+  // A backend that kept answering "next step" is not followed for ever.
+  let calls = 0
+  const endless = await C.run(() => Promise.resolve({match: {id: 'm'}, bound: true, calls: (calls += 1)}), 'lnbc-invoice')
+  assert.equal(endless.state, 'settling')
+  assert.equal(calls, 4)
+})
+
+test('the page asks again by itself a few times, then leaves it to the player', () => {
+  const delays = [0, 1, 2, 3, 4, 5].map(tries => C.nextCheck(tries))
+  assert.deepEqual(delays.slice(4), [null, null])
+  assert.ok(delays.slice(0, 4).every(delay => delay >= 3000))
+  assert.ok(delays.slice(0, 4).reduce((sum, delay) => sum + delay, 0) < 120000)
 })
 
 test('a payout remark left in the note by an earlier version is not shown as the match note', () => {
