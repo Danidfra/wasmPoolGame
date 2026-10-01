@@ -392,7 +392,7 @@
     $('again').classList.toggle('primary', !payout.form)
     show('claim-destination', payout.form === 'destination')
     text('claim-label', status === 'cancelled' ? 'Where should the refund go?' : 'Where should the sats go?')
-    $('claim-destination').placeholder = 'you@wallet.com, or an invoice for exactly ' + amount
+    $('claim-destination').placeholder = 'you@example.com, or an invoice for exactly ' + amount
     if (payout.form && !$('claim-button').classList.contains('busy')) text('claim-button', payout.button)
     show('payout', !!payout.line)
     text('payout-text', payout.line)

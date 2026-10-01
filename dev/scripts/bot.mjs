@@ -1,6 +1,6 @@
 // A headless opponent, for testing a match on your own.
 //
-//   node scripts/bot.mjs http://localhost:9000/ext/lnpool/matches/<match_id> [name]
+//   node scripts/bot.mjs https://<your LNbits>/ext/lnpool/matches/<match_id> [name]
 //
 // It joins the match, prints its buy-in invoice for you to pay, then plays its
 // turns through the same public API and the same engine the browser uses: it

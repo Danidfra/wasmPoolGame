@@ -14,6 +14,7 @@ real LNbits data folder is read or written.
 import asyncio
 import json
 import os
+import secrets
 import subprocess
 import sys
 import time
@@ -58,6 +59,9 @@ from lnbits.db import Database  # noqa: E402
 from lnbits.settings import settings  # noqa: E402
 from lnbits.wallets import get_funding_source  # noqa: E402
 
+# The throwaway instance needs a superuser; nobody ever logs in as it.
+SUPERUSER_PASSWORD = secrets.token_urlsafe(16)
+
 checks = []
 
 
@@ -75,14 +79,14 @@ async def main():
         await first_install(
             UpdateSuperuserPassword(
                 username="superadmin",
-                password="secret1234",
-                password_repeat="secret1234",
+                password=SUPERUSER_PASSWORD,
+                password_repeat=SUPERUSER_PASSWORD,
                 first_install_token=settings.first_install_token,
             )
         )
         # A call the runtime cuts off must show up as a failed check, not end the run.
         transport = ASGITransport(app=manager.app, raise_app_exceptions=False)
-        async with AsyncClient(transport=transport, base_url="http://127.0.0.1:9000") as http:
+        async with AsyncClient(transport=transport, base_url="http://lnbits.test") as http:
             await scenario(http)
 
 
