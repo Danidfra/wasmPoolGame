@@ -166,8 +166,22 @@
     const button = $(buttonId)
     button.classList.toggle('busy', isBusy)
     if (isBusy) button.disabled = true
-    else if (buttonId !== 'create-button') button.disabled = false
-    else renderStake()
+    else if (buttonId === 'create-button') renderStake()
+    else button.disabled = resting.has(buttonId)
+  }
+
+  // Keeps a button out of reach for a moment after it was answered, so that
+  // an impatient second press does not send the same request again.
+  const resting = new Set()
+
+  function rest(buttonId, ms) {
+    const button = $(buttonId)
+    resting.add(buttonId)
+    button.disabled = true
+    window.setTimeout(() => {
+      resting.delete(buttonId)
+      if (!button.classList.contains('busy')) button.disabled = false
+    }, ms)
   }
 
   // ── Match ─────────────────────────────────────────────────────────────────
@@ -391,6 +405,7 @@
     // One gold button at a time: claiming comes before starting another game.
     $('again').classList.toggle('primary', !payout.form)
     show('claim-destination', payout.form === 'destination')
+    show('claim-label', payout.form === 'destination')
     text('claim-label', status === 'cancelled' ? 'Where should the refund go?' : 'Where should the sats go?')
     $('claim-destination').placeholder = 'you@example.com, or an invoice for exactly ' + amount
     if (payout.form && !$('claim-button').classList.contains('busy')) text('claim-button', payout.button)
@@ -514,5 +529,5 @@
     return node
   }
 
-  window.PoolUI = {init, page, fatal, lobby, busy, match, callout, toast, power, sound, live, portrait, tableSponsor}
+  window.PoolUI = {init, page, fatal, lobby, busy, rest, match, callout, toast, power, sound, live, portrait, tableSponsor}
 })()

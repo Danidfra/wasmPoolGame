@@ -89,10 +89,16 @@
       }
     }
     if (state === 'unconfirmed') {
+      // LNbits answers about a payment only while the wallet could pay it
+      // again, so a check from a wallet the payout emptied cannot succeed.
+      const lowWallet = /Last check: .*(reserve|insufficient balance)/i.test(String(view.settlement.detail || ''))
       return {
         form: 'retry',
         button: 'Check the payment again',
-        line: 'This payment could not be confirmed. Look in your wallet: it may have arrived. If it has not, check again, or ask the hall operator.',
+        line: 'This payment could not be confirmed. Look in your wallet: it may have arrived. ' +
+          (lowWallet
+            ? 'LNbits cannot say until the hall wallet is topped up, so checking again will not help yet. The hall operator can see the payment in the wallet.'
+            : 'If it has not, check again in a moment, or ask the hall operator.'),
         tone: 'bad'
       }
     }

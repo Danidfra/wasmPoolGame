@@ -242,7 +242,10 @@ test('the result screen offers the right thing for every payout state', () => {
   assert.deepEqual([offered('failed', 'Payment failed: no route').form, offered('failed').button], ['retry', 'Try the payment again'])
   assert.match(offered('failed', 'Payment failed: no route').line, /did not go through \(Payment failed: no route\)/)
   assert.deepEqual([offered('unconfirmed').form, offered('unconfirmed').button], ['retry', 'Check the payment again'])
-  assert.match(offered('unconfirmed', 'x. Last check: Insufficient balance.').line, /may have arrived/)
+  assert.match(offered('unconfirmed', 'The payment was started and its result was never recorded.').line, /may have arrived.*check again in a moment/)
+  // From a wallet the payout emptied, checking again cannot help, and the page says so.
+  assert.match(offered('unconfirmed', 'x. Last check: Insufficient balance.').line, /may have arrived.*until the hall wallet is topped up.*will not help yet/)
+  assert.match(offered('unconfirmed', 'x. Last check: You must reserve at least (2  sat) to cover potential routing fees.').line, /topped up/)
 
   // LNbits will never send that invoice: now, and only now, another one can be named.
   const released = offered('released', 'Payment is failed node, retrying is not possible.')

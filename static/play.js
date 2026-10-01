@@ -21,6 +21,7 @@
   const origin = new URL(window.location.href).origin
 
   const SYNC_MS = 5000
+  const CLAIM_REST_MS = 5000
   const AIM_SEND_MS = 150
   const MAX_STEPS_PER_FRAME = 48
   const NAME_KEY = 'lnpool.name'
@@ -45,6 +46,7 @@
     claimTries: 0,
     claimTimer: 0,
     claiming: false,
+    acting: false,
     viewAt: 0,
     concedeArmed: false,
     muted: false
@@ -603,15 +605,22 @@
       await sync()
     } catch (error) {
       UI.toast(friendly(error), 'bad')
+    } finally {
+      UI.busy('join-button', false)
     }
-    UI.busy('join-button', false)
   }
 
   async function cancelMatch() {
+    if (app.acting) return
+    app.acting = true
+    UI.busy('cancel-button', true)
     try {
       applyView((await bridge.api('POST', matchPath('/cancel'), withCreds())).match)
     } catch (error) {
       UI.toast(friendly(error), 'bad')
+    } finally {
+      app.acting = false
+      UI.busy('cancel-button', false)
     }
   }
 
@@ -621,10 +630,16 @@
       render()
       return
     }
+    if (app.acting) return
+    app.acting = true
+    UI.busy('concede', true)
     try {
       applyView((await bridge.api('POST', matchPath('/concede'), withCreds())).match)
     } catch (error) {
       UI.toast(friendly(error), 'bad')
+    } finally {
+      app.acting = false
+      UI.busy('concede', false)
     }
   }
 
@@ -638,22 +653,33 @@
     app.claimTimer = 0
     if (byHand) app.claimTries = 0
     UI.busy('claim-button', true)
-    const outcome = await C.run(next => bridge.api('POST', matchPath('/claim'), withCreds({destination: next})), destination)
-    if (outcome.view) applyView(outcome.view)
-    if (outcome.state === 'timeout' || outcome.state === 'error') {
-      // No answer does not mean no payout: LNbits can stop the request after
-      // the payment was made. Look at what the match says before telling the
-      // player that anything went wrong.
-      await sync()
-      const state = app.view ? V.payoutStatus(app.view, 0) : ''
-      if (byHand && outcome.state === 'error' && !['paid', 'paying', 'pending', 'unconfirmed'].includes(state)) {
-        UI.toast(friendly(outcome.error), 'bad')
+    let settling = false
+    try {
+      const outcome = await C.run(next => bridge.api('POST', matchPath('/claim'), withCreds({destination: next})), destination)
+      settling = outcome.state === 'settling'
+      if (outcome.view) applyView(outcome.view)
+      if (outcome.state === 'timeout' || outcome.state === 'error') {
+        // No answer does not mean no payout: LNbits can stop the request after
+        // the payment was made. Look at what the match says before telling the
+        // player that anything went wrong.
+        await sync()
+        const state = app.view ? V.payoutStatus(app.view, 0) : ''
+        if (byHand && outcome.state === 'error' && !['paid', 'paying', 'pending', 'unconfirmed'].includes(state)) {
+          UI.toast(friendly(outcome.error), 'bad')
+        }
       }
+    } catch (error) {
+      UI.toast(friendly(error), 'bad')
+    } finally {
+      // Whatever happened, the button comes back and the page shows what the
+      // match says now.
+      app.claiming = false
+      UI.busy('claim-button', false)
+      // The backend ignores a second press within a few seconds of a refusal.
+      if (app.view && ['unsent', 'failed', 'unconfirmed'].includes(V.payoutStatus(app.view, 0))) UI.rest('claim-button', CLAIM_REST_MS)
+      render()
+      keepClaiming(app.view, settling)
     }
-    app.claiming = false
-    UI.busy('claim-button', false)
-    render()
-    keepClaiming(app.view, outcome.state === 'settling')
   }
 
   // While a payout to this player is unsettled, ask again a few times, further

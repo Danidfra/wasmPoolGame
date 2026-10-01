@@ -168,7 +168,7 @@
 
   function needsAttention(match) {
     if (match.status === 'disputed') return true
-    if (['failed', 'manual', 'unsent', 'released', 'unconfirmed'].includes(match.payoutStatus)) return true
+    if (['failed', 'manual', 'unsent', 'unconfirmed'].includes(match.payoutStatus)) return true
     return false
   }
 
@@ -195,9 +195,11 @@
 
   function payoutLabel(match) {
     if (match.payoutStatus === 'paid') return match.payoutAmount + ' sats paid'
-    if (match.payoutStatus === 'failed') return 'FAILED: needs you'
-    if (match.payoutStatus === 'unsent') return 'NOT SENT: needs you'
-    if (match.payoutStatus === 'released') return 'FAILED: the player has to claim again'
+    if (match.payoutStatus === 'failed') return 'FAILED: see details'
+    if (match.payoutStatus === 'unsent') return 'NOT SENT: see details'
+    if (match.payoutStatus === 'released') return 'failed; the player can claim again'
+    if (match.payoutStatus === 'paying') return 'being paid'
+    if (match.payoutStatus === 'pending') return 'in flight'
     if (match.payoutStatus === 'unconfirmed') return 'UNCONFIRMED: check the wallet'
     if (match.payoutStatus === 'manual') return 'needs you'
     if (match.payoutStatus) return match.payoutStatus
