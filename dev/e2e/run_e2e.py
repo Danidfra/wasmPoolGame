@@ -449,8 +449,12 @@ async def scenario(http):
     second, second_hash = await outside_invoice(9, "second wallet")
     again = (await ok(http, "POST", path7 + "/claim", {**creds7[1], "destination": second}))["match"]
     check("claiming again while the wallet is short changes nothing, whatever wallet it names", again["settlement"]["status"] == "unsent" and await balance(tight_wallet) == 10 and second_hash not in funding.paid_invoices)
+    await age_payout(match7)
+    for _ in range(3):  # asked again and again, a minute apart: the same refusal each time
+        await ok(http, "POST", path7 + "/claim", {**creds7[1], "destination": second})
+        await age_payout(match7)
     detail = await ok(http, "GET", f"/matches/{match7}/admin", usr=tight_owner.id)
-    check("the operator sees the match flagged, the invoice and both calls", detail["match"]["payoutStatus"] == "unsent" and [p["status"] for p in detail["payouts"]] == ["bound", "refused", "refused"], str([p["status"] for p in detail["payouts"]]))
+    check("the operator sees the match flagged and the invoice; the same refusal five times is one row", detail["match"]["payoutStatus"] == "unsent" and [p["status"] for p in detail["payouts"]] == ["bound", "refused"], str([p["status"] for p in detail["payouts"]]))
 
     await update_wallet_balance(wallet=tight_wallet, amount=2)  # the operator tops up
     paid = (await ok(http, "POST", path7 + "/claim", {**creds7[1], "destination": second}))["match"]
@@ -468,6 +472,7 @@ async def scenario(http):
     short = (await ok(http, "POST", path8 + "/claim", {**creds8[2], "destination": recorded}))["match"]
     check("a 1000 sat prize from a wallet 7 sats short of the reserve is not sent", short["settlement"]["status"] == "unsent" and await balance(tight_wallet) == 1003, f"{short['settlement']['status']}, wallet {await balance(tight_wallet)}")
     await update_wallet_balance(wallet=tight_wallet, amount=50)
+    await age_payout(match8)
     racers = [await outside_invoice(1000, f"racer {n}") for n in range(4)]
     results = await asyncio.gather(*[api(http, "POST", path8 + "/claim", {**creds8[2], "destination": bolt11}) for bolt11, _ in racers])
     summary = [("settling" if r["data"].get("settling") else r["data"]["match"]["settlement"]["status"]) if r.get("ok") else "error: " + r.get("error", "")[:60] for r in results]
@@ -574,7 +579,10 @@ async def scenario(http):
     check("asking about it is one call to LNbits: no lock, no new invoice", wallet_calls(asking) == ["wallet.pay_invoice"], f"{wallet_calls(asking)}, {asking['total'] / 1e6:.1f}M fuel")
     check("...which cannot confirm it from a wallet the payout emptied: unconfirmed, and no other wallet is paid", unknown["settlement"]["status"] == "unconfirmed" and elsewhere_hash not in funding.paid_invoices and await balance(exact_wallet) == 3, f"{unknown['settlement']['status']}: {unknown['settlement'].get('detail', '')[-60:]}")
 
+    twice = (await ok(http, "POST", path12 + "/claim", {**creds12[1], "destination": elsewhere}))["match"]
+    check("a second press straight after a refusal asks nothing of LNbits", twice["settlement"]["status"] == "unconfirmed" and wallet_calls(fuelprobe.last("claim-lnpool-payout")) == [], str(wallet_calls(fuelprobe.last("claim-lnpool-payout"))))
     await update_wallet_balance(wallet=exact_wallet, amount=9)  # the prize and the reserve are in the wallet again
+    await age_payout(match12)
     crowd = [await outside_invoice(10, f"crowd {n}") for n in range(4)]
     results = await asyncio.gather(*[api(http, "POST", path12 + "/claim", {**creds12[1], "destination": bolt11}) for bolt11, _ in crowd])
     summary = [("settling" if r["data"].get("settling") else r["data"]["match"]["settlement"]["status"]) if r.get("ok") else "error: " + r.get("error", "")[:60] for r in results]

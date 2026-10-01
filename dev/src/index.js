@@ -36,6 +36,7 @@ const BIND_BUDGET_MS = 2500
 // about safety depends on these.
 const SETTLING_SECONDS = 15
 const RECHECK_SECONDS = 15
+const RETRY_SECONDS = 5
 const PENDING_SHOWN_SECONDS = 120
 const MAX_STATE_BYTES = 4096
 const HEX64 = /^[0-9a-f]{64}$/
@@ -497,6 +498,8 @@ function payBoundInvoice(match, settlement, due) {
   if (calls.some(call => call.status === 'started' && now - call.created_at < SETTLING_SECONDS)) return {match, settling: true}
   const last = calls[calls.length - 1]
   if (last && last.status === 'pending' && now - last.created_at < RECHECK_SECONDS) return {match}
+  // LNbits refused a moment ago: a second press, or a second tab, learns nothing.
+  if (last && last.status === 'refused' && now - match.updated_at < RETRY_SECONDS) return {match}
   if (calls.length >= MAX_PAYOUT_CALLS) {
     throw new Error('This payout has been tried too many times. The hall operator has to settle it.')
   }
@@ -516,6 +519,11 @@ function payBoundInvoice(match, settlement, due) {
     created_at: now,
     updated_at: now
   })
+  // The pages were told "nothing was sent". That stops being true the moment
+  // this call is made, and if it is cut off nobody would put it right.
+  if (match.payout_status === 'unsent' || match.payout_status === 'refused') {
+    recordSettlement(match, [...new Set([binding, ...calls, call])])
+  }
   // If LNbits stops this invocation while the call runs, the payment still
   // completes or fails on its own and nothing below happens.
   const outcome = payoutOutcome(wallet.payInvoice({
@@ -525,7 +533,15 @@ function payBoundInvoice(match, settlement, due) {
     description: 'LN Pool payout ' + match.id,
     extra: {lnpool_match: match.id, lnpool_kind: 'payout'}
   }))
-  storage.set(PAYOUTS, {...call, status: outcome.status, detail: outcome.detail})
+  if (last && last.status === 'refused' && outcome.status === 'refused' && outcome.detail === last.detail) {
+    // The same refusal as last time says nothing new. Its row goes, so that
+    // asking again and again while the wallet is short does not use up the
+    // calls this payout is allowed. (Cut off before this line, the row stays
+    // `started`, which errs on the side of "a payment may exist".)
+    storage.delete(PAYOUTS, call.id)
+  } else {
+    storage.set(PAYOUTS, {...call, status: outcome.status, detail: outcome.detail})
+  }
   const settled = recordSettlement(storage.get(MATCHES, match.id) || match, payoutRows(match.id).filter(isPayoutRow))
   poke(settled)
   return {match: settled}

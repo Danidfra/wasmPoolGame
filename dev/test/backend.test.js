@@ -486,7 +486,9 @@ test('a hall wallet holding only the pot cannot pay: nothing is sent, and after 
   // Trying again changes nothing while the wallet is short. Naming another
   // wallet changes nothing either: the recorded invoice is the one.
   const second = host.externalInvoice(9)
+  host.now += 10
   assert.equal(claim(host, match, 1, second).settlement.status, 'unsent')
+  host.now += 10
   assert.equal(claim(host, match, 1, '').settlement.status, 'unsent')
   assert.equal(outgoing(host, 'payout').length, 0)
   assert.equal(outgoing(host, 'lock').length, 1, 'trying again takes no lock')
@@ -494,6 +496,7 @@ test('a hall wallet holding only the pot cannot pay: nothing is sent, and after 
   // The operator tops the wallet up. The winner claims again and gets the
   // full prize, on the invoice recorded at the start.
   host.balance += 2
+  host.now += 10
   const paid = claim(host, match, 1, second)
   assert.deepEqual(paid.settlement, {seat: 1, amount: 9, reason: 'prize', status: 'paid'})
   assert.deepEqual(outgoing(host, 'payout').map(payment => [payment.bolt11, payment.amount]), [[first, 9]])
@@ -525,8 +528,10 @@ test('the prize is never reduced to fit the wallet', () => {
   claim(host, match, 1, full)
   // An invoice for less, offered afterwards, is not taken up.
   const smaller = host.externalInvoice(7)
+  host.now += 10
   assert.equal(claim(host, match, 1, smaller).settlement.status, 'unsent')
   host.balance += 2
+  host.now += 10
   assert.equal(claim(host, match, 1, smaller).settlement.status, 'paid')
   assert.deepEqual(outgoing(host, 'payout').map(payment => [payment.bolt11, payment.amount]), [[full, 9]])
 })
@@ -644,8 +649,8 @@ test('a cut-off payout from a wallet it emptied stays unconfirmed, and bound, un
 
   // LNbits checks the balance before it looks for the payment, so asking is
   // refused. That proves nothing, and frees nothing.
-  host.now += 30
   for (let n = 0; n < 3; n += 1) {
+    host.now += 30
     const other = host.externalInvoice(10)
     const unknown = claim(host, match, 1, other)
     assert.equal(unknown.settlement.status, 'unconfirmed')
@@ -653,11 +658,12 @@ test('a cut-off payout from a wallet it emptied stays unconfirmed, and bound, un
     assert.equal(host.invoice(other).payment, '')
   }
   assert.equal(outgoing(host, 'payout').length, 1)
-  assert.deepEqual(payoutsOf(host, match).map(row => row.status), ['bound', 'started', 'refused', 'refused', 'refused'])
+  assert.deepEqual(payoutsOf(host, match).map(row => row.status), ['bound', 'started', 'refused'], 'the same refusal three times is one row')
 
   // With the prize and the reserve in the wallet again LNbits gets as far as
   // its own record. Nothing is sent.
   host.balance = 12
+  host.now += 30
   const found = claim(host, match, 1, host.externalInvoice(10))
   assert.equal(found.settlement.status, 'paid')
   assert.equal(host.balance, 12)
@@ -957,6 +963,7 @@ test('rows from before invoices were recorded separately still bind their invoic
     })
   }
   host.rawSet('lnpool_matches', {...host.row('lnpool_matches', match.matchId), payout_status: 'unconfirmed'})
+  host.now += 10
   assert.equal(claim(host, match, 1, other).settlement.status, 'paid')
   assert.deepEqual(outgoing(host, 'payout').map(payment => payment.bolt11), [x])
   assert.equal(host.invoice(other).payment, '')
@@ -1036,10 +1043,78 @@ test('a refund has no spare lock, so the binding makes one once it is safely rec
   assert.ok(host.invoice(bound.next_lock).internal)
 })
 
-test('the number of calls to pay one invoice is bounded', () => {
+test('asking again and again while the wallet is short does not use up the calls a payout is allowed', () => {
   const {host, match} = fundedOnlyByThePot()
   const invoice = host.externalInvoice(9)
-  for (let n = 0; n < 40; n += 1) assert.equal(claim(host, match, 1, invoice).settlement.status, 'unsent')
+  host.hostCalls.length = 0
+  for (let n = 0; n < 100; n += 1) {
+    host.now += 10
+    assert.equal(claim(host, match, 1, invoice).settlement.status, 'unsent')
+  }
+  assert.deepEqual(payoutsOf(host, match).map(row => row.status), ['bound', 'refused'], 'a hundred identical refusals are one row')
+  assert.equal(host.hostCalls.filter(name => name === 'wallet.payInvoice').length, 101, 'the lock, then every one of them asked LNbits')
+
+  // A second press straight after a refusal, or a second tab, asks nothing.
+  const twice = hostCallsOf(host, () => {
+    assert.equal(claim(host, match, 1, invoice).settlement.status, 'unsent')
+    assert.equal(claim(host, match, 1, invoice).settlement.status, 'unsent')
+  })
+  assert.deepEqual(twice.filter(name => name.startsWith('wallet.')), [])
+
+  // So the wallet can still be topped up and the prize paid, however long it took.
+  host.balance += 2
+  host.now += 10
+  assert.equal(claim(host, match, 1, invoice).settlement.status, 'paid')
+  assert.deepEqual(payoutsOf(host, match).map(row => row.status), ['bound', 'refused', 'paid'])
+})
+
+test('a retry of an unsent payout that is cut off while paying is not left reading "nothing was sent"', () => {
+  const {host, match} = fundedOnlyByThePot()
+  const invoice = host.externalInvoice(9)
+  assert.equal(claim(host, match, 1, invoice).settlement.status, 'unsent')
+  // Topped up; the retry pays, and LNbits stops the invocation before it hears.
+  host.balance += 5
+  host.now += 10
+  host.cutOff = target => !target.internal
+  assert.deepEqual(host.call('claimLnpoolPayout', {...match[1], destination: ''}), {ok: false, error: 'wasm trap: interrupt'})
+  host.cutOff = null
+  assert.equal(host.invoice(invoice).paid, true)
+  // Nobody has claimed again, and the pages already know better.
+  assert.equal(host.ok('getPublicLnpoolMatch', {matchId: match.matchId}).match.settlement.status, 'paying')
+  host.now += 30
+  assert.equal(host.ok('getPublicLnpoolMatch', {matchId: match.matchId}).match.settlement.status, 'unconfirmed')
+  assert.equal(host.ok('listLnpoolMatches', {}).matches.find(item => item.id === match.matchId).payoutStatus, 'unconfirmed')
+})
+
+test('a call cut off after the same refusal as before leaves its row, on the side of caution', () => {
+  const {host, match} = fundedOnlyByThePot()
+  const invoice = host.externalInvoice(9)
+  assert.equal(claim(host, match, 1, invoice).settlement.status, 'unsent')
+  host.now += 10
+  // The answer came, and the invocation was stopped before it could act on it.
+  host.onHostCall = name => {
+    if (name === 'storage.delete') throw new Error('wasm trap: interrupt')
+  }
+  assert.equal(host.call('claimLnpoolPayout', {...match[1], destination: ''}).ok, false)
+  host.onHostCall = null
+  assert.deepEqual(payoutsOf(host, match).map(row => row.status), ['bound', 'refused', 'started'])
+  host.now += 30
+  assert.equal(host.ok('syncLnpoolMatch', {...match[1]}).match.settlement.status, 'unconfirmed')
+})
+
+test('the number of calls to pay one invoice is bounded', () => {
+  const host = createHost()
+  const match = startMatch(host)
+  playTurn(host, match, table(1, 1))
+  const invoice = host.externalInvoice(2000)
+  // A different answer every time, none of them a payment.
+  let n = 0
+  host.refusePayments = target => (target.internal ? null : 'The time limit of ' + (n += 1) + ' seconds between payments has been reached.')
+  for (let tries = 0; tries < 40; tries += 1) {
+    host.now += 10
+    assert.equal(claim(host, match, 1, invoice).settlement.status, 'unsent')
+  }
+  host.now += 10
   assert.match(host.call('claimLnpoolPayout', {...match[1], destination: invoice}).error, /too many times/)
   assert.equal(payoutsOf(host, match).length, 41)
   assert.equal(outgoing(host, 'payout').length, 0)
@@ -1050,6 +1125,7 @@ test('the operator sees the recorded invoice and every call made to pay it', () 
   const first = host.externalInvoice(9)
   claim(host, match, 1, first)
   host.balance += 2
+  host.now += 10
   claim(host, match, 1, '')
   const detail = host.ok('getLnpoolMatchAdmin', {matchId: match.matchId})
   assert.deepEqual(detail.payouts.map(row => [row.status, row.invoice, row.amount]), [['bound', first, 9], ['refused', first, 9], ['paid', first, 9]])

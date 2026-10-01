@@ -91,6 +91,9 @@ export function createHost({float = FLOAT} = {}) {
       host.writes.push({table, id: row.id})
       return row
     },
+    delete(table, id) {
+      rows(table).delete(id)
+    },
     find(table, {filters = {}, sortBy = '', descending = false, limit = 25, offset = 0} = {}) {
       let found = host.rows(table).filter(row => Object.entries(filters).every(([key, value]) => row[key] === value))
       if (sortBy) found.sort((a, b) => (a[sortBy] < b[sortBy] ? -1 : a[sortBy] > b[sortBy] ? 1 : 0) * (descending ? -1 : 1))

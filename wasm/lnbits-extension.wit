@@ -22,6 +22,15 @@ interface host {
     ok: bool
   }
 
+  record storage-delete-request {
+    table: string,
+    id: string
+  }
+
+  record storage-delete-response {
+    ok: bool
+  }
+
   record storage-paginated-request {
     table: string,
     filters-json: string,
@@ -119,6 +128,7 @@ interface host {
   storage-get: func(request: storage-get-request) -> storage-get-response;
   storage-set: func(request: storage-set-request) -> storage-set-response;
   storage-get-paginated: func(request: storage-paginated-request) -> storage-paginated-response;
+  storage-delete: func(request: storage-delete-request) -> storage-delete-response;
   create-invoice-public: func(request: invoice-public-request) -> invoice-response;
   pay-invoice: func(request: pay-invoice-request) -> pay-invoice-response;
   pay-lnurl: func(request: pay-lnurl-request) -> pay-invoice-response;

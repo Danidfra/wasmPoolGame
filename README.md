@@ -136,7 +136,11 @@ the reserve.
   match id. That list is the authority.
 - To let LN Pool confirm it by itself, have the prize plus the reserve in
   the wallet and let the player press "Check the payment again". There is no
-  time limit on that.
+  time limit on that. From a wallet the payout emptied, LNbits answers
+  "Insufficient balance" before it looks at the payment, and LN Pool has no
+  other way to ask: the match then stays unconfirmed until you close it by
+  hand. This is a limit of what LNbits lets an extension read, not a sign
+  that the payment failed.
 - While a payment might exist, LN Pool never accepts another destination for
   that match. This is deliberate: it would rather leave a match for you to
   settle than pay twice.
@@ -187,9 +191,9 @@ Do not upgrade the extension while matches are in play.
 
 ```bash
 cd dev
-npm run check            # syntax checks and 94 unit tests
+npm run check            # syntax checks and 97 unit tests
 npm run build:wasm       # bundle, then jco componentize -> ../wasm/module.wasm
-LNBITS_DIR=/path/to/lnbits e2e/run.sh   # 85 checks against LNbits itself
+LNBITS_DIR=/path/to/lnbits e2e/run.sh   # 86 checks against LNbits itself
 npm run check:release    # is the archive for this commit installable?
 ```
 

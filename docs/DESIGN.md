@@ -130,7 +130,10 @@ Settlement has one step that must not happen twice, and many that may:
   payment up.
 
 Each paying call writes a row of its own before it calls (`started`) and its
-answer afterwards:
+answer afterwards. One exception keeps the table small: a call that gets the
+same refusal as the call before it removes its own row again, since it says
+nothing new. Asking again and again while the wallet is short therefore does
+not use up the calls a payout is allowed.
 
 | Row | Meaning | LNbits said |
 |---|---|---|
@@ -186,7 +189,10 @@ lists. It is never used to decide a payout.
 | `manual` | the operator has to settle | |
 
 A refused check adds nothing to what is known, so it never turns `pending`,
-`failed` or `unconfirmed` into `unsent`.
+`failed` or `unconfirmed` into `unsent`. The other way round, a retry of an
+`unsent` payout sets the copy to `paying` before it calls LNbits: if that
+call is cut off while paying, the pages must not go on saying that nothing
+was sent.
 
 The copy cannot age by itself: when the invocation that was paying is cut
 off, the row would say `paying` for ever. So the view turns `paying` into
@@ -231,9 +237,16 @@ follows from that:
   the reserve**, because it checks the balance first. From a wallet the payout
   emptied the check is refused; the match shows `unconfirmed` and stays bound
   until a check is made with enough in the wallet, or the operator confirms
-  the payment in the wallet's list and closes the match.
+  the payment in the wallet's list and closes the match. Calling
+  `pay_invoice` again is the only question an extension can ask about a
+  payment, and it is not a reliable one: this is a limit of the host API
+  (see "What the framework is missing"), and `unconfirmed` is where a match
+  stays when it bites. Nothing here treats a refusal as proof of anything.
+- **A refusal is not asked about again for 5 seconds.** A second press, or a
+  second tab, learns nothing from LNbits in that time.
 - **The page makes one claim at a time**, gives a request 15 s, asks again by
-  itself four times over about 80 s, then leaves a button. An earlier version
+  itself four times over about 80 s, then leaves a button, which rests for a
+  few seconds after each answer. An earlier version
   started a new claim from every answer and reached hundreds of requests for
   one payout.
 
@@ -424,7 +437,10 @@ change to this extension's structure once available.
 | Idempotency key on `pay_invoice` (core has `external_id`; the host API does not pass it) | Same | Pay with key `match:<id>` and drop the lock |
 | Invoice expiry in `create_invoice_public` | Lock dies after the default hour | Long-lived lock |
 | Authenticated websocket connections / server-only events | Clients must treat every message as a hint and refetch | Pokes and the aim preview become trustworthy; the shot could travel on the socket |
-| Retry of a failed paid-event dispatch, or a host call to read a payment | A dropped event loses a seat. A payout's result can only be learned by paying its invoice again, which LNbits refuses when the wallet is low | Reconcile on the next request; read the payout's status directly |
+| Retry of a failed paid-event dispatch | A dropped event loses a seat | Reconcile on the next request |
+| A host call to read an outgoing payment (status, fee, preimage) by payment hash | A payout whose call was cut off can only be asked about by paying its invoice again. LNbits checks the balance before it looks for the payment, so from a wallet the payout emptied the answer is "Insufficient balance" and the match stays `unconfirmed`, although LNbits has the payment as paid in its own table | Read the status and settle the match as paid, whatever the balance |
+| An existing payment looked up before the balance check in core's `_pay_external_invoice`, as is already done for internal invoices | Same | The existing check answers "already paid" whatever the balance |
+| An event for outgoing payments, like `onInvoicePaid` for incoming ones | The result of a payment is lost when its call is cut off | LNbits tells the extension how the payment ended |
 | A wallet balance readable by a public call, or a payment that can carry its own fee budget | The backend cannot tell beforehand that the hall wallet is short of the routing-fee reserve | Refuse the match, or warn the operator, before a player is owed money |
 | A host call to cancel or shorten an invoice | Late buy-ins need manual refunds | No overflow |
 | More fuel/time for one invocation, or a native helper | The backend cannot replay a shot itself | A referee: the backend re-runs a disputed or unreported shot with the same engine and awards the match |

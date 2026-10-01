@@ -10,6 +10,7 @@ import {
   payInvoice,
   payLnurl,
   randomId,
+  storageDelete,
   storageGet,
   storageGetPaginated,
   storageSet,
@@ -33,6 +34,10 @@ export const storage = {
   set(table, row) {
     storageSet({table, dataJson: JSON.stringify(row)})
     return row
+  },
+
+  delete(table, id) {
+    storageDelete({table, id})
   },
 
   find(table, {filters = {}, sortBy = '', descending = false, limit = 25, offset = 0} = {}) {
