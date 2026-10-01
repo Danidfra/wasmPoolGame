@@ -1,9 +1,36 @@
+# Dependencies and build output (wasm/module.wasm is tracked: it is what LNbits loads)
 node_modules/
 dev/dist/
+
+# Secrets and local configuration
+.env
+.env.*
+*.pem
+*.key
+.lnbits_auth_key
+
+# Logs
+*.log
+npm-debug.log*
+
+# Python caches from the end-to-end harness
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local LNbits data, test databases and scratch files
+data/
+*.sqlite3
+*.sqlite3-journal
+*.db
+tmp/
+*.tmp
+*.zip
+*.tgz
+
+# Editors and operating systems
 .DS_Store
-.env
-.env.*
-*.log
-.env
-.env.*
-*.log
+.idea/
+.vscode/
+*.swp
