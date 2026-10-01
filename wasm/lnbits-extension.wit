@@ -1,0 +1,195 @@
+package lnbits:extension;
+
+// Only the host functions LN Pool imports. Record shapes follow LNbits core
+// (lnbits/core/wasm_ext/api/models.py); the host defines more functions than
+// are listed here and ignores the ones a component does not import.
+interface host {
+  record storage-get-request {
+    table: string,
+    id: string
+  }
+
+  record storage-get-response {
+    data-json: option<string>
+  }
+
+  record storage-set-request {
+    table: string,
+    data-json: string
+  }
+
+  record storage-set-response {
+    ok: bool
+  }
+
+  record storage-paginated-request {
+    table: string,
+    filters-json: string,
+    search: string,
+    search-fields: list<string>,
+    sort-by: string,
+    descending: bool,
+    limit: u32,
+    offset: u32
+  }
+
+  record storage-paginated-response {
+    rows-json: string,
+    total: u64
+  }
+
+  record invoice-public-request {
+    source-id: string,
+    amount: f64,
+    currency: string,
+    memo: string,
+    extra: list<tuple<string, string>>
+  }
+
+  record invoice-response {
+    payment-hash: string,
+    payment-request: string,
+    checking-id: string
+  }
+
+  record pay-invoice-request {
+    wallet-id: string,
+    payment-request: string,
+    max-sat: option<u64>,
+    description: string,
+    extra: list<tuple<string, string>>
+  }
+
+  record pay-lnurl-request {
+    wallet-id: string,
+    lnurl: string,
+    amount: f64,
+    currency: string,
+    comment: option<string>,
+    description: string,
+    max-sat: option<u64>,
+    extra: list<tuple<string, string>>,
+    fetch-only: bool
+  }
+
+  record pay-invoice-response {
+    ok: bool,
+    error: option<string>,
+    checking-id: option<string>,
+    payment-hash: option<string>,
+    status: option<string>,
+    amount-msat: s64,
+    fee-msat: s64,
+    pending: bool,
+    success: bool,
+    payment-request: option<string>
+  }
+
+  record websocket-publish-request {
+    item-id: string,
+    data-json: string
+  }
+
+  record websocket-publish-response {
+    sent: bool
+  }
+
+  record user-wallet-summary {
+    id: string,
+    name: string,
+    currency: option<string>
+  }
+
+  record list-user-wallets-response {
+    wallets: list<user-wallet-summary>
+  }
+
+  record random-id-request {
+    prefix: string
+  }
+
+  record random-id-response {
+    id: string
+  }
+
+  record now-response {
+    timestamp: u64
+  }
+
+  storage-get: func(request: storage-get-request) -> storage-get-response;
+  storage-set: func(request: storage-set-request) -> storage-set-response;
+  storage-get-paginated: func(request: storage-paginated-request) -> storage-paginated-response;
+  create-invoice-public: func(request: invoice-public-request) -> invoice-response;
+  pay-invoice: func(request: pay-invoice-request) -> pay-invoice-response;
+  pay-lnurl: func(request: pay-lnurl-request) -> pay-invoice-response;
+  list-user-wallets: func() -> list-user-wallets-response;
+  websocket-publish: func(request: websocket-publish-request) -> websocket-publish-response;
+  random-id: func(request: random-id-request) -> random-id-response;
+  now: func() -> now-response;
+}
+
+interface utils-lightning {
+  record bolt11-request {
+    bolt11: string
+  }
+
+  record decode-invoice-response {
+    valid: bool,
+    payment-hash: option<string>,
+    amount-msat: option<u64>,
+    expiry: option<u64>,
+    expires-at: option<u64>,
+    memo: option<string>
+  }
+
+  record validate-invoice-response {
+    valid: bool,
+    error: option<string>
+  }
+
+  record verify-preimage-request {
+    preimage: string,
+    payment-hash: string
+  }
+
+  record verify-preimage-response {
+    valid: bool
+  }
+
+  record random-secret-and-hash-request {
+    length: u32
+  }
+
+  record random-secret-and-hash-response {
+    secret: string,
+    hash: string
+  }
+
+  decode-invoice: func(request: bolt11-request) -> decode-invoice-response;
+  validate-invoice: func(request: bolt11-request) -> validate-invoice-response;
+  verify-preimage: func(request: verify-preimage-request) -> verify-preimage-response;
+  random-secret-and-hash: func(request: random-secret-and-hash-request) -> random-secret-and-hash-response;
+}
+
+world lnpool {
+  import host;
+  import utils-lightning;
+
+  export get-lnpool-hall: func(request-json: string) -> string;
+  export save-lnpool-hall: func(request-json: string) -> string;
+  export list-lnpool-wallets: func(request-json: string) -> string;
+  export list-lnpool-matches: func(request-json: string) -> string;
+  export get-lnpool-match-admin: func(request-json: string) -> string;
+  export resolve-lnpool-match: func(request-json: string) -> string;
+  export get-public-lnpool-hall: func(request-json: string) -> string;
+  export create-lnpool-match: func(request-json: string) -> string;
+  export get-public-lnpool-match: func(request-json: string) -> string;
+  export sync-lnpool-match: func(request-json: string) -> string;
+  export join-lnpool-match: func(request-json: string) -> string;
+  export cancel-lnpool-match: func(request-json: string) -> string;
+  export shoot-lnpool-match: func(request-json: string) -> string;
+  export report-lnpool-result: func(request-json: string) -> string;
+  export concede-lnpool-match: func(request-json: string) -> string;
+  export claim-lnpool-payout: func(request-json: string) -> string;
+  export record-lnpool-payment: func(event-json: string) -> string;
+}

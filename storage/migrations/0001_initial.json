@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "operations": [
+    {
+      "op": "create_table",
+      "table": "lnpool_halls",
+      "fields": [
+        {"name": "id", "type": "string"},
+        {"name": "wallet_id", "type": "string"},
+        {"name": "wallet_name", "type": "string"},
+        {"name": "enabled", "type": "boolean"},
+        {"name": "fee_percent", "type": "integer"},
+        {"name": "min_stake", "type": "integer"},
+        {"name": "max_stake", "type": "integer"},
+        {"name": "created_at", "type": "integer"},
+        {"name": "updated_at", "type": "integer"}
+      ]
+    },
+    {
+      "op": "create_table",
+      "table": "lnpool_matches",
+      "fields": [
+        {"name": "id", "type": "string"},
+        {"name": "hall_id", "type": "string"},
+        {"name": "wallet_id", "type": "string"},
+        {"name": "stake", "type": "integer"},
+        {"name": "fee_percent", "type": "integer"},
+        {"name": "status", "type": "string"},
+        {"name": "p1_name", "type": "string"},
+        {"name": "p2_name", "type": "string"},
+        {"name": "seated", "type": "integer"},
+        {"name": "seq", "type": "integer"},
+        {"name": "turn", "type": "integer"},
+        {"name": "game_json", "type": "string"},
+        {"name": "shot_json", "type": "string"},
+        {"name": "winner", "type": "integer"},
+        {"name": "lock_bolt11", "type": "string"},
+        {"name": "payout_seat", "type": "integer"},
+        {"name": "payout_amount", "type": "integer"},
+        {"name": "payout_bolt11", "type": "string"},
+        {"name": "payout_hash", "type": "string"},
+        {"name": "payout_status", "type": "string"},
+        {"name": "note", "type": "string"},
+        {"name": "created_at", "type": "integer"},
+        {"name": "updated_at", "type": "integer"}
+      ]
+    },
+    {
+      "op": "create_table",
+      "table": "lnpool_players",
+      "fields": [
+        {"name": "id", "type": "string"},
+        {"name": "match_id", "type": "string"},
+        {"name": "seat", "type": "integer"},
+        {"name": "name", "type": "string"},
+        {"name": "token_hash", "type": "string"},
+        {"name": "paid_amount", "type": "integer"},
+        {"name": "status", "type": "string"},
+        {"name": "result_seq", "type": "integer"},
+        {"name": "result_json", "type": "string"},
+        {"name": "created_at", "type": "integer"}
+      ]
+    },
+    {"op": "create_index", "table": "lnpool_matches", "name": "lnpool_matches_by_hall", "field": "hall_id"},
+    {"op": "create_index", "table": "lnpool_matches", "name": "lnpool_matches_by_status", "field": "status"},
+    {"op": "create_index", "table": "lnpool_players", "name": "lnpool_players_by_match", "field": "match_id"}
+  ]
+}

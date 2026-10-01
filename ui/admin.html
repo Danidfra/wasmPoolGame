@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LN Pool hall</title>
+    <link rel="stylesheet" href="/ext-assets/lnpool/app.css" />
+  </head>
+  <body>
+    <main class="page wide">
+      <header class="top">
+        <h1>LN Pool</h1>
+        <span class="muted">Run a pool hall: players buy in, the winner takes the pot.</span>
+      </header>
+      <p id="notice" class="notice" role="status" hidden></p>
+
+      <div class="columns">
+        <div class="card">
+          <h2>Hall</h2>
+          <label class="check"><input id="enabled" type="checkbox" /> Open for new matches</label>
+          <div class="fields stacked">
+            <label>Wallet that holds the buy-ins <select id="wallet"></select></label>
+            <label>Smallest stake, sats <input id="min-stake" type="number" min="1" /></label>
+            <label>Largest stake, sats <input id="max-stake" type="number" min="1" /></label>
+            <label>Hall fee, % of the pot <input id="fee" type="number" min="0" max="50" /></label>
+          </div>
+          <div class="fields">
+            <button id="save" class="primary">Save</button>
+            <button id="authorize">Authorize payouts</button>
+          </div>
+          <p class="muted">
+            Winners are paid from this wallet without you being present, so LNbits asks you to approve background payments
+            up to two largest stakes. Lightning routing fees come out of this wallet on top of the pot: keep a small
+            float in it, or set a hall fee that covers them.
+          </p>
+        </div>
+
+        <div class="card">
+          <h2>Player link</h2>
+          <p id="link-help" class="muted">Save the hall to get its link.</p>
+          <div id="link-row" class="fields" hidden>
+            <input id="hall-link" readonly aria-label="Hall link" />
+            <button id="copy-hall">Copy</button>
+            <button id="open-hall">Open</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="unseated-card" class="card" hidden>
+        <h2>Buy-ins to refund by hand</h2>
+        <p class="muted">
+          These players paid but got no seat (the seat was taken first, or the match had closed). Nothing refunds them
+          automatically. Find the payment in the wallet by its hash and send the sats back.
+        </p>
+        <ul id="unseated" class="list"></ul>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Matches</h2>
+          <button id="refresh" class="quiet">Refresh</button>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th>Players</th><th>Stake</th><th>Status</th><th>Payout</th><th>Updated</th><th></th></tr>
+            </thead>
+            <tbody id="matches"></tbody>
+          </table>
+        </div>
+        <p id="no-matches" class="muted">No matches yet.</p>
+        <div class="fields">
+          <button id="prev" class="quiet">Newer</button>
+          <button id="next" class="quiet">Older</button>
+        </div>
+      </div>
+
+      <div id="detail" class="card" hidden>
+        <div class="card-head">
+          <h2 id="detail-title"></h2>
+          <button id="detail-close" class="quiet">Close</button>
+        </div>
+        <p id="detail-summary"></p>
+        <ul id="detail-players" class="list"></ul>
+        <p id="detail-verdict" class="verdict" hidden></p>
+        <div class="fields">
+          <input id="resolve-note" maxlength="300" placeholder="What you did, e.g. paid seat 1 by hand" aria-label="Note" />
+          <button id="resolve" class="danger">Mark as settled by hand</button>
+          <button id="open-match">Open match</button>
+        </div>
+        <p class="muted">
+          Marking a match as settled closes it: nobody can claim from it afterwards. Do that only after you have paid
+          or refunded the players yourself.
+        </p>
+      </div>
+    </main>
+    <script src="/ext-assets/lnpool/lnbits-extension-sdk.js"></script>
+    <script src="/ext-assets/lnpool/pool-engine.js"></script>
+    <script src="/ext-assets/lnpool/admin.js"></script>
+  </body>
+</html>

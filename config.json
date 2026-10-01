@@ -1,0 +1,176 @@
+{
+  "id": "lnpool",
+  "name": "LN Pool",
+  "short_description": "1v1 8-ball pool for sats: both players buy in, the winner takes the pot.",
+  "version": "0.1.0",
+  "min_lnbits_version": "1.5.7",
+  "tile": "/ext-assets/lnpool/assets/icon.png",
+  "tags": ["gaming", "pool", "wasm", "lightning"],
+  "extension_type": "wasm",
+  "wasm": {
+    "module": "wasm/module.wasm",
+    "world": "lnpool",
+    "exports": [
+      {"name": "get-lnpool-hall", "visibility": "authenticated"},
+      {"name": "save-lnpool-hall", "visibility": "authenticated"},
+      {"name": "list-lnpool-wallets", "visibility": "authenticated"},
+      {"name": "list-lnpool-matches", "visibility": "authenticated"},
+      {"name": "get-lnpool-match-admin", "visibility": "authenticated"},
+      {"name": "resolve-lnpool-match", "visibility": "authenticated"},
+      {"name": "get-public-lnpool-hall", "visibility": "public"},
+      {"name": "create-lnpool-match", "visibility": "public"},
+      {"name": "get-public-lnpool-match", "visibility": "public"},
+      {"name": "sync-lnpool-match", "visibility": "public"},
+      {"name": "join-lnpool-match", "visibility": "public"},
+      {"name": "cancel-lnpool-match", "visibility": "public"},
+      {"name": "shoot-lnpool-match", "visibility": "public"},
+      {"name": "report-lnpool-result", "visibility": "public"},
+      {"name": "concede-lnpool-match", "visibility": "public"},
+      {"name": "claim-lnpool-payout", "visibility": "public"},
+      {"name": "record-lnpool-payment", "visibility": "event"}
+    ]
+  },
+  "events": {
+    "onInvoicePaid": "record-lnpool-payment"
+  },
+  "ui_routes": [
+    {
+      "path": "/lnpool",
+      "entrypoint": "ui/admin.html",
+      "auth": "user"
+    },
+    {
+      "path": "/lnpool/halls/{hall_id}",
+      "entrypoint": "ui/play.html",
+      "auth": "public",
+      "path_params": {"hall_id": "hallId"}
+    },
+    {
+      "path": "/lnpool/matches/{match_id}",
+      "entrypoint": "ui/play.html",
+      "auth": "public",
+      "path_params": {"match_id": "matchId"}
+    }
+  ],
+  "api_routes": [
+    {"method": "GET", "path": "/hall", "export": "get-lnpool-hall", "auth": "user"},
+    {"method": "PUT", "path": "/hall", "export": "save-lnpool-hall", "auth": "user"},
+    {"method": "GET", "path": "/wallets", "export": "list-lnpool-wallets", "auth": "user"},
+    {"method": "GET", "path": "/matches", "export": "list-lnpool-matches", "auth": "user"},
+    {
+      "method": "GET",
+      "path": "/matches/{match_id}/admin",
+      "export": "get-lnpool-match-admin",
+      "auth": "user",
+      "path_params": {"match_id": "matchId"}
+    },
+    {
+      "method": "POST",
+      "path": "/matches/{match_id}/resolve",
+      "export": "resolve-lnpool-match",
+      "auth": "user",
+      "path_params": {"match_id": "matchId"}
+    },
+    {
+      "method": "GET",
+      "path": "/halls/{hall_id}",
+      "export": "get-public-lnpool-hall",
+      "auth": "public",
+      "path_params": {"hall_id": "hallId"},
+      "ownerContext": {"table": "lnpool_halls", "idParam": "hallId"}
+    },
+    {
+      "method": "POST",
+      "path": "/halls/{hall_id}/matches",
+      "export": "create-lnpool-match",
+      "auth": "public",
+      "path_params": {"hall_id": "hallId"},
+      "ownerContext": {"table": "lnpool_halls", "idParam": "hallId"}
+    },
+    {
+      "method": "GET",
+      "path": "/matches/{match_id}",
+      "export": "get-public-lnpool-match",
+      "auth": "public",
+      "path_params": {"match_id": "matchId"},
+      "ownerContext": {"table": "lnpool_matches", "idParam": "matchId"}
+    },
+    {
+      "method": "POST",
+      "path": "/matches/{match_id}/sync",
+      "export": "sync-lnpool-match",
+      "auth": "public",
+      "path_params": {"match_id": "matchId"},
+      "ownerContext": {"table": "lnpool_matches", "idParam": "matchId"}
+    },
+    {
+      "method": "POST",
+      "path": "/matches/{match_id}/join",
+      "export": "join-lnpool-match",
+      "auth": "public",
+      "path_params": {"match_id": "matchId"},
+      "ownerContext": {"table": "lnpool_matches", "idParam": "matchId"}
+    },
+    {
+      "method": "POST",
+      "path": "/matches/{match_id}/cancel",
+      "export": "cancel-lnpool-match",
+      "auth": "public",
+      "path_params": {"match_id": "matchId"},
+      "ownerContext": {"table": "lnpool_matches", "idParam": "matchId"}
+    },
+    {
+      "method": "POST",
+      "path": "/matches/{match_id}/shot",
+      "export": "shoot-lnpool-match",
+      "auth": "public",
+      "path_params": {"match_id": "matchId"},
+      "ownerContext": {"table": "lnpool_matches", "idParam": "matchId"}
+    },
+    {
+      "method": "POST",
+      "path": "/matches/{match_id}/result",
+      "export": "report-lnpool-result",
+      "auth": "public",
+      "path_params": {"match_id": "matchId"},
+      "ownerContext": {"table": "lnpool_matches", "idParam": "matchId"}
+    },
+    {
+      "method": "POST",
+      "path": "/matches/{match_id}/concede",
+      "export": "concede-lnpool-match",
+      "auth": "public",
+      "path_params": {"match_id": "matchId"},
+      "ownerContext": {"table": "lnpool_matches", "idParam": "matchId"}
+    },
+    {
+      "method": "POST",
+      "path": "/matches/{match_id}/claim",
+      "export": "claim-lnpool-payout",
+      "auth": "public",
+      "path_params": {"match_id": "matchId"},
+      "ownerContext": {"table": "lnpool_matches", "idParam": "matchId"}
+    }
+  ],
+  "permissions": [
+    {"id": "ext.storage.read", "description": "Read LN Pool halls, matches, and players."},
+    {"id": "ext.storage.write", "description": "Write LN Pool halls, matches, players, and settlement state."},
+    {"id": "wallet.list", "description": "Let the hall owner choose which wallet holds buy-ins."},
+    {
+      "id": "wallet.create_invoice_public",
+      "description": "Create buy-in invoices for a match on the hall owner's wallet.",
+      "policies": [{"table": "lnpool_matches", "wallet_field": "wallet_id"}]
+    },
+    {
+      "id": "wallet.pay_invoice_background",
+      "description": "Pay the pot to the agreed winner from the owner-approved wallet."
+    },
+    {"id": "websocket.subscribe", "description": "Let players receive match update notifications."},
+    {
+      "id": "websocket.publish",
+      "description": "Notify players that the match state changed.",
+      "policies": [{"max_messages_per_second": 20}]
+    },
+    {"id": "utils.basic", "description": "Decode payout invoices and verify player seat keys."}
+  ]
+}

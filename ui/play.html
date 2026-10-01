@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>LN Pool</title>
+    <link rel="stylesheet" href="/ext-assets/lnpool/app.css" />
+  </head>
+  <body class="play">
+    <div class="app">
+      <header class="masthead">
+        <button id="brand" class="brand" aria-label="LN Pool lobby">
+          <span class="brand-ball" aria-hidden="true">8</span>
+          <span class="brand-name">LN Pool</span>
+        </button>
+        <div class="masthead-actions">
+          <span id="live" class="live" hidden><i></i><span id="live-text">Live</span></span>
+          <button id="sound" class="icon-button" aria-pressed="true" aria-label="Sound" title="Sound" hidden>
+            <svg id="sound-on" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+              <path fill="currentColor" d="M4 9v6h4l5 4V5L8 9H4zm11.5 3a3.5 3.5 0 0 0-2-3.15v6.3a3.5 3.5 0 0 0 2-3.15zm-2-7.7v2.1a5.9 5.9 0 0 1 0 11.2v2.1a8 8 0 0 0 0-15.4z" />
+            </svg>
+            <svg id="sound-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden>
+              <path fill="currentColor" d="M4 9v6h4l5 4V5L8 9H4zm16.3.1-1.4-1.4L16.5 10l-2.4-2.3-1.4 1.4 2.4 2.4-2.4 2.4 1.4 1.4 2.4-2.4 2.4 2.4 1.4-1.4-2.4-2.4 2.4-2.4z" />
+            </svg>
+          </button>
+          <button id="to-hall" class="ghost" hidden>Lobby</button>
+        </div>
+      </header>
+
+      <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+      <main id="loading" class="center-state">
+        <span class="spinner" aria-hidden="true"></span>
+        <p>Setting up the table</p>
+      </main>
+
+      <main id="fatal" class="center-state" hidden>
+        <h2 id="fatal-title">Something went wrong</h2>
+        <p id="fatal-text" class="muted"></p>
+        <button id="fatal-retry" class="primary">Try again</button>
+      </main>
+
+      <!-- Lobby -->
+      <main id="lobby" hidden>
+        <section class="hero">
+          <p class="eyebrow">Lightning 8-ball</p>
+          <h1>Play pool for sats.</h1>
+          <p class="lede">Two players, one buy-in each. The winner takes the pot.</p>
+          <ol class="steps">
+            <li><b>1</b><span>Create a game or join one</span></li>
+            <li><b>2</b><span>Both pay the buy-in over Lightning</span></li>
+            <li><b>3</b><span>Play. The winner claims the pot</span></li>
+          </ol>
+        </section>
+
+        <div class="lobby-grid">
+          <section class="panel" id="create-panel">
+            <h2>Create a game</h2>
+            <p id="hall-closed" class="closed" hidden>This hall is not taking new games right now.</p>
+            <div id="create-form">
+              <label class="field">
+                <span>Your name</span>
+                <input id="create-name" maxlength="18" autocomplete="off" placeholder="Shown to your opponent" />
+              </label>
+              <div class="field">
+                <span>Buy-in</span>
+                <div id="stake-presets" class="chips" role="group" aria-label="Buy-in"></div>
+                <label class="stake-input">
+                  <input id="create-stake" type="number" inputmode="numeric" aria-label="Buy-in in sats" />
+                  <span>sats</span>
+                </label>
+                <p id="stake-range" class="muted small"></p>
+              </div>
+              <dl class="summary">
+                <div><dt>You pay</dt><dd id="sum-pay"></dd></div>
+                <div><dt>Winner gets</dt><dd id="sum-win" class="gold"></dd></div>
+                <div id="sum-fee-row" hidden><dt>Hall fee</dt><dd id="sum-fee"></dd></div>
+              </dl>
+              <button id="create-button" class="primary big">Create game</button>
+              <p class="muted small">You get an invoice for the buy-in and a link to send to your opponent.</p>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Open games</h2>
+              <span id="open-count" class="count" hidden></span>
+            </div>
+            <ul id="open-matches" class="games"></ul>
+            <div id="no-matches" class="empty" hidden>
+              <span class="empty-ball" aria-hidden="true"></span>
+              <p>No one is waiting for an opponent.</p>
+              <p class="muted small">Create a game and share its link.</p>
+            </div>
+          </section>
+        </div>
+
+        <aside class="sponsor" data-sponsor-slot="lobby" hidden></aside>
+      </main>
+
+      <!-- Match -->
+      <main id="match" hidden>
+        <section class="hud" aria-label="Match">
+          <div id="seat-1" class="player">
+            <span class="avatar" aria-hidden="true"></span>
+            <div class="player-text">
+              <span class="player-name"><span class="name"></span><span class="you-tag" hidden>You</span></span>
+              <span class="player-sub"></span>
+            </div>
+            <div class="rack" aria-hidden="true"></div>
+          </div>
+          <div class="pot">
+            <span class="pot-label">Pot</span>
+            <strong id="pot-amount"></strong>
+            <span id="pot-sub" class="pot-sub"></span>
+          </div>
+          <div id="seat-2" class="player right">
+            <span class="avatar" aria-hidden="true"></span>
+            <div class="player-text">
+              <span class="player-name"><span class="name"></span><span class="you-tag" hidden>You</span></span>
+              <span class="player-sub"></span>
+            </div>
+            <div class="rack" aria-hidden="true"></div>
+          </div>
+        </section>
+
+        <!-- Before the game: join, pay, wait -->
+        <section id="pregame" class="stage" hidden>
+          <ol class="stepper" aria-label="Progress">
+            <li id="step-1"><b>1</b><span>Buy in</span></li>
+            <li id="step-2"><b>2</b><span>Opponent</span></li>
+            <li id="step-3"><b>3</b><span>Play</span></li>
+          </ol>
+
+          <div id="join" class="panel narrow" hidden>
+            <h2 id="join-title"></h2>
+            <p id="join-text" class="muted"></p>
+            <label class="field">
+              <span>Your name</span>
+              <input id="join-name" maxlength="18" autocomplete="off" placeholder="Shown to your opponent" />
+            </label>
+            <button id="join-button" class="primary big">Join</button>
+            <p class="muted small">You get a Lightning invoice. Your seat is yours once it is paid.</p>
+          </div>
+
+          <div id="pay" class="panel narrow" hidden>
+            <h2 id="pay-title"></h2>
+            <p class="muted">Scan with a Lightning wallet, or copy the invoice.</p>
+            <img id="invoice-qr" class="qr" alt="Lightning invoice QR code" />
+            <div class="copy-row">
+              <input id="invoice-text" readonly aria-label="Lightning invoice" />
+              <button id="copy-invoice">Copy</button>
+            </div>
+            <p class="waiting-line"><span class="spinner small" aria-hidden="true"></span>Waiting for your payment</p>
+          </div>
+
+          <div id="waiting" class="panel narrow" hidden>
+            <p class="confirmed"><span class="tick" aria-hidden="true"></span>You are in</p>
+            <h2>Invite your opponent</h2>
+            <p class="muted">Send this link. The game starts as soon as they pay the same buy-in.</p>
+            <div class="copy-row">
+              <input id="share-link" readonly aria-label="Match link" />
+              <button id="copy-link" class="primary">Copy link</button>
+            </div>
+            <p class="waiting-line"><span class="spinner small" aria-hidden="true"></span>Waiting for an opponent</p>
+            <button id="cancel-button" class="ghost danger" hidden>Cancel and get my buy-in back</button>
+          </div>
+
+          <div id="closed" class="panel narrow" hidden>
+            <h2 id="closed-title"></h2>
+            <p id="closed-text" class="muted"></p>
+          </div>
+        </section>
+
+        <!-- The game -->
+        <section id="arena" hidden>
+          <div id="turn" class="turn">
+            <span id="turn-text"></span>
+            <span id="turn-tags" class="tags"></span>
+          </div>
+          <div id="table-wrap" class="table-wrap">
+            <canvas id="table"></canvas>
+            <div id="callout" class="callout" hidden>
+              <strong id="callout-text"></strong>
+              <span id="callout-sub"></span>
+            </div>
+          </div>
+          <div id="dock" class="dock">
+          <div id="controls" class="controls" hidden>
+            <div class="nudge" role="group" aria-label="Fine aim">
+              <button id="nudge-left" aria-label="Aim a little left">&#9664;</button>
+              <button id="nudge-right" aria-label="Aim a little right">&#9654;</button>
+            </div>
+            <label class="power">
+              <span class="power-label">Power <b id="power-value">55</b></span>
+              <input id="power" type="range" min="10" max="100" value="55" />
+            </label>
+            <button id="shoot" class="primary shoot">Shoot</button>
+          </div>
+          <p id="hint" class="hint"></p>
+          </div>
+        </section>
+
+        <!-- After the game, and every state that needs a person -->
+        <section id="result" class="result" hidden>
+          <p id="result-eyebrow" class="eyebrow"></p>
+          <h2 id="result-title"></h2>
+          <p id="result-amount" class="result-amount" hidden></p>
+          <p id="result-text" class="muted"></p>
+          <div id="claim-form" class="claim" hidden>
+            <label class="field">
+              <span id="claim-label">Where should the sats go?</span>
+              <input id="claim-destination" autocomplete="off" />
+            </label>
+            <button id="claim-button" class="primary big">Claim</button>
+          </div>
+          <p id="payout" class="payout" hidden><span id="payout-icon" class="tick" aria-hidden="true"></span><span id="payout-text"></span></p>
+          <div class="result-actions">
+            <button id="again" class="primary">New game</button>
+            <button id="result-lobby" class="ghost">Back to lobby</button>
+          </div>
+        </section>
+
+        <aside class="sponsor" data-sponsor-slot="match" hidden></aside>
+
+        <footer class="match-footer">
+          <button id="concede" class="ghost danger" hidden>Concede</button>
+          <details id="seat-key" class="seat-key" hidden>
+            <summary>Seat key</summary>
+            <div id="own-key" hidden>
+              <p class="muted small">
+                Your seat lives in this browser tab. If you close it, this key is the only way back to your seat and
+                your winnings. Anyone who has it can play and claim as you.
+              </p>
+              <button id="copy-key">Copy my seat key</button>
+            </div>
+            <div id="restore" hidden>
+              <p class="muted small">Lost your tab? Paste the seat key you saved for this match.</p>
+              <div class="copy-row">
+                <input id="restore-key" autocomplete="off" aria-label="Seat key" />
+                <button id="restore-button">Restore seat</button>
+              </div>
+            </div>
+          </details>
+        </footer>
+      </main>
+    </div>
+    <script src="/ext-assets/lnpool/lnbits-extension-sdk.js"></script>
+    <script src="/ext-assets/lnpool/vendor/qrcode.js"></script>
+    <script src="/ext-assets/lnpool/sponsors.js"></script>
+    <script src="/ext-assets/lnpool/pool-engine.js"></script>
+    <script src="/ext-assets/lnpool/pool-view.js"></script>
+    <script src="/ext-assets/lnpool/pool-fx.js"></script>
+    <script src="/ext-assets/lnpool/pool-table.js"></script>
+    <script src="/ext-assets/lnpool/play-ui.js"></script>
+    <script src="/ext-assets/lnpool/play.js"></script>
+  </body>
+</html>
